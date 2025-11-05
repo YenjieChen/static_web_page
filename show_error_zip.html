@@ -1,98 +1,393 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-Hant">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>資料表格顯示</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
-<style>
-  body {
-    margin:0; font-family: Arial, sans-serif; background:#0078d7; display:flex; justify-content:center; align-items:center; min-height:100vh;
-    color:#222;
-  }
-  .container {
-    background:#fff; border-radius:12px; padding:30px 40px; max-width:1000px; width:90%; box-shadow:0 6px 20px rgba(0,0,0,0.08);
-  }
-  h1 { text-align:center; color:#0078d7; margin-bottom:20px; }
-  table { width:100%; border-collapse:collapse; font-size:14px; }
-  th, td { padding:10px 12px; border-bottom:1px solid #eee; text-align:left; }
-  th { background:#f9f9fc; cursor:pointer; position:sticky; top:0; }
-  tr:hover td { background:#f4f8ff; }
-  .empty { text-align:center; padding:40px; color:#666; font-size:15px; }
-</style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>資料表格顯示</title>
+  <style>
+    :root {
+      font-family: 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif;
+      --bg-gradient: linear-gradient(135deg, #4a90e2, #0078d7);
+      --card-bg: #fff;
+      --shadow: 0 6px 20px rgba(0,0,0,0.08);
+      --border-radius: 14px;
+      --accent: #0078d7;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg-gradient);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #222;
+    }
+    .container {
+      width: 95%;
+      max-width: none;
+      background: var(--card-bg);
+      box-shadow: var(--shadow);
+      border-radius: var(--border-radius);
+      padding: 20px 30px;
+      backdrop-filter: blur(8px);
+      animation: fadeIn 0.8s ease;
+      margin: 20px auto;
+    }
+    @keyframes fadeIn {
+      from {opacity: 0; transform: translateY(15px);} to {opacity: 1; transform: translateY(0);}
+    }
+    h1 {
+      font-size: 22px;
+      font-weight: 600;
+      color: var(--accent);
+      margin: 0 0 20px;
+      text-align: center;
+    }
+    .controls {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 15px;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .view-toggle {
+      display: flex;
+      gap: 8px;
+      background: #f5f5f5;
+      padding: 4px;
+      border-radius: 8px;
+    }
+    .view-toggle button {
+      padding: 6px 14px;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      border-radius: 6px;
+      font-size: 13px;
+      transition: all 0.2s;
+    }
+    .view-toggle button.active {
+      background: var(--accent);
+      color: white;
+    }
+    .stats {
+      font-size: 13px;
+      color: #666;
+    }
+    .table-wrapper {
+      overflow-x: auto;
+      overflow-y: visible;
+      max-height: 80vh;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      position: relative;
+    }
+    .table-wrapper::-webkit-scrollbar {
+      height: 8px;
+      width: 8px;
+    }
+    .table-wrapper::-webkit-scrollbar-track {
+      background: #f1f1f1;
+      border-radius: 4px;
+    }
+    .table-wrapper::-webkit-scrollbar-thumb {
+      background: #888;
+      border-radius: 4px;
+    }
+    .table-wrapper::-webkit-scrollbar-thumb:hover {
+      background: #555;
+    }
+    table {
+      width: 100%;
+      min-width: max-content;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th {
+      padding: 10px 14px;
+      border-bottom: 1px solid #eee;
+      text-align: left;
+      white-space: nowrap;
+      min-width: 120px;
+      background: #f9f9fc;
+      cursor: pointer;
+      user-select: none;
+      font-weight: 600;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      box-shadow: 0 2px 2px -1px rgba(0,0,0,0.1);
+    }
+    th:hover {
+      background: #f0f0f5;
+    }
+    th::after {
+      content: ' ↕';
+      opacity: 0.3;
+      font-size: 11px;
+    }
+    td {
+      padding: 10px 14px;
+      border-bottom: 1px solid #eee;
+      text-align: left;
+      min-width: 120px;
+      max-width: 300px;
+      white-space: normal;
+      word-wrap: break-word;
+      overflow-wrap: break-word;
+    }
+    tr:hover td { background: #f4f8ff; }
+    .card-view {
+      display: none;
+      grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+      gap: 15px;
+      max-height: 80vh;
+      overflow-y: auto;
+      padding: 10px;
+    }
+    .card-view.active {
+      display: grid;
+    }
+    .card {
+      background: #fafafa;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      padding: 15px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+    .card:hover {
+      box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+      transform: translateY(-2px);
+      transition: all 0.2s;
+    }
+    .card-row {
+      display: flex;
+      margin-bottom: 10px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid #eee;
+    }
+    .card-row:last-child {
+      margin-bottom: 0;
+      padding-bottom: 0;
+      border-bottom: none;
+    }
+    .card-label {
+      font-weight: 600;
+      color: #555;
+      min-width: 120px;
+      flex-shrink: 0;
+      font-size: 12px;
+    }
+    .card-value {
+      color: #222;
+      flex: 1;
+      word-wrap: break-word;
+      font-size: 13px;
+    }
+    .empty {
+      text-align: center;
+      padding: 40px;
+      color: #666;
+      font-size: 15px;
+    }
+    @media (max-width: 768px) {
+      .container {
+        width: 100%;
+        padding: 15px;
+        margin: 0;
+        border-radius: 0;
+      }
+      .controls {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .view-toggle {
+        width: 100%;
+        justify-content: center;
+      }
+      .card-view {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
 </head>
 <body>
-<div class="container">
-  <h1>資料表格顯示</h1>
-  <div id="table-wrap"></div>
-</div>
+  <div class="container">
+    <h1>Error Log</h1>
+    <div class="controls">
+      <div class="view-toggle">
+        <button id="btn-table" class="active">Table View</button>
+        <button id="btn-card">Card View</button>
+      </div>
+      <div class="stats" id="stats"></div>
+    </div>
+    <div id="table-wrap"></div>
+    <div id="card-wrap" class="card-view"></div>
+  </div>
 
-<script>
-function renderTable(data){
-    const wrap=document.getElementById('table-wrap');
-    if(!data || !data.length){ wrap.innerHTML='<div class="empty">無資料</div>'; return; }
+  <script>
+  (function(){
+    function qs(){ return new URLSearchParams(location.search); }
+    function decodeParam(name){ const p = qs().get(name); return p ? decodeURIComponent(p) : null; }
 
-    const headers=Object.keys(data[0]);
-    const table=document.createElement('table');
+    let data = [];
+    let headers = [];
+    let sortAsc = true; let sortCol = null;
+    let currentView = 'table';
 
-    const thead=document.createElement('thead');
-    const trh=document.createElement('tr');
-    headers.forEach((h,idx)=>{
-        const th=document.createElement('th'); th.textContent=h;
-        th.addEventListener('click', ()=>sortByColumn(idx));
+    function renderEmpty(msg){ 
+      document.getElementById('table-wrap').innerHTML = `<div class="empty">${msg}</div>`;
+      document.getElementById('card-wrap').innerHTML = '';
+    }
+
+    function updateStats(){
+      const statsEl = document.getElementById('stats');
+      if(data.length > 0){
+        statsEl.textContent = `Total: ${data.length} records | Columns: ${headers.length}`;
+      } else {
+        statsEl.textContent = '';
+      }
+    }
+
+    function makeTable(headers, rows){
+      const wrapper = document.createElement('div');
+      wrapper.className = 'table-wrapper';
+      
+      const table = document.createElement('table');
+      const thead = document.createElement('thead');
+      const trh = document.createElement('tr');
+      headers.forEach((h,idx)=>{
+        const th = document.createElement('th'); 
+        th.textContent = h;
+        th.addEventListener('click', ()=> sortByColumn(idx));
         trh.appendChild(th);
-    });
-    thead.appendChild(trh);
-    table.appendChild(thead);
+      });
+      thead.appendChild(trh);
+      table.appendChild(thead);
 
-    const tbody=document.createElement('tbody');
-    data.forEach(r=>{
-        const tr=document.createElement('tr');
+      const tbody = document.createElement('tbody');
+      rows.forEach(r=>{
+        const tr = document.createElement('tr');
         headers.forEach(h=>{
-            const td=document.createElement('td'); td.textContent=r[h]??'';
-            tr.appendChild(td);
+          const td = document.createElement('td');
+          const value = r[h] ?? '';
+          td.textContent = value;
+          if(value.length > 50){
+            td.title = value;
+          }
+          tr.appendChild(td);
         });
         tbody.appendChild(tr);
-    });
-    table.appendChild(tbody);
-    wrap.innerHTML=''; wrap.appendChild(table);
+      });
+      table.appendChild(tbody);
+      wrapper.appendChild(table);
+      return wrapper;
+    }
 
-    let sortCol=null, sortAsc=true;
-    function sortByColumn(idx){
-        const col=headers[idx];
-        if(sortCol===col) sortAsc=!sortAsc; else { sortCol=col; sortAsc=true; }
-        data.sort((a,b)=>{
-            const A=a[col]??'', B=b[col]??'';
-            const nA=parseFloat(A), nB=parseFloat(B);
-            if(!isNaN(nA) && !isNaN(nB)) return sortAsc? nA-nB : nB-nA;
-            return sortAsc? String(A).localeCompare(String(B)) : String(B).localeCompare(String(A));
+    function makeCardView(rows){
+      const cardWrap = document.getElementById('card-wrap');
+      cardWrap.innerHTML = '';
+      
+      rows.forEach((row, idx)=>{
+        const card = document.createElement('div');
+        card.className = 'card';
+        
+        headers.forEach(h=>{
+          const cardRow = document.createElement('div');
+          cardRow.className = 'card-row';
+          
+          const label = document.createElement('div');
+          label.className = 'card-label';
+          label.textContent = h + ':';
+          
+          const value = document.createElement('div');
+          value.className = 'card-value';
+          const val = row[h] ?? '';
+          value.textContent = val;
+          if(val.length > 200){
+            value.style.maxHeight = '100px';
+            value.style.overflowY = 'auto';
+          }
+          
+          cardRow.appendChild(label);
+          cardRow.appendChild(value);
+          card.appendChild(cardRow);
         });
-        renderTable(data);
+        
+        cardWrap.appendChild(card);
+      });
     }
-}
 
-// 解析 URL 中 data 參數
-function getDataFromURL(){
-    const params = new URLSearchParams(window.location.search);
-    let dataStr = params.get('data');
-    if(!dataStr) return null;
-
-    // URL-safe Base64 -> 標準 Base64
-    dataStr = dataStr.replace(/-/g,'+').replace(/_/g,'/');
-    while(dataStr.length % 4) dataStr += '=';
-
-    try{
-        const compressed = Uint8Array.from(atob(decodeURIComponent(dataStr)), c=>c.charCodeAt(0));
-        const jsonStr = pako.ungzip(compressed,{to:'string'});
-        return JSON.parse(jsonStr);
-    } catch(e){
-        console.error("解壓縮失敗:", e);
-        return null;
+    function sortByColumn(idx){
+      const col = headers[idx];
+      if(sortCol===col) sortAsc = !sortAsc; else { sortCol=col; sortAsc=true; }
+      data.sort((a,b)=>{
+        const A=a[col]||''; const B=b[col]||'';
+        const nA=parseFloat(A), nB=parseFloat(B);
+        if(!isNaN(nA) && !isNaN(nB)) return sortAsc? nA-nB : nB-nA;
+        return sortAsc? String(A).localeCompare(String(B)) : String(B).localeCompare(String(A));
+      });
+      refreshView();
     }
-}
 
-const tableData = getDataFromURL();
-renderTable(tableData);
-</script>
+    function switchView(view){
+      currentView = view;
+      const btnTable = document.getElementById('btn-table');
+      const btnCard = document.getElementById('btn-card');
+      const tableWrap = document.getElementById('table-wrap');
+      const cardWrap = document.getElementById('card-wrap');
+      
+      if(view === 'table'){
+        btnTable.classList.add('active');
+        btnCard.classList.remove('active');
+        tableWrap.style.display = 'block';
+        cardWrap.classList.remove('active');
+      } else {
+        btnCard.classList.add('active');
+        btnTable.classList.remove('active');
+        tableWrap.style.display = 'none';
+        cardWrap.classList.add('active');
+      }
+      refreshView();
+    }
+
+    function refreshView(){
+      if(!data.length){ 
+        renderEmpty('無可顯示的資料');
+        updateStats();
+        return; 
+      }
+      
+      if(currentView === 'table'){
+        const wrap = document.getElementById('table-wrap');
+        const tableWrapper = makeTable(headers, data);
+        wrap.innerHTML='';
+        wrap.appendChild(tableWrapper);
+      } else {
+        makeCardView(data);
+      }
+      updateStats();
+    }
+
+    (function init(){
+      const dataParam = decodeParam('data');
+      if(!dataParam){ renderEmpty('請使用 ?data= 參數傳入 JSON 資料'); return; }
+      try {
+        const arr = JSON.parse(dataParam);
+        if(!Array.isArray(arr)) throw new Error('data 必須是陣列');
+        data = arr;
+        headers = Array.from(new Set(data.flatMap(o=>Object.keys(o))));
+        
+        document.getElementById('btn-table').addEventListener('click', ()=> switchView('table'));
+        document.getElementById('btn-card').addEventListener('click', ()=> switchView('card'));
+        
+        refreshView();
+      } catch(e){ 
+        renderEmpty('解析 JSON 資料時發生錯誤: ' + e.message); 
+      }
+    })();
+  })();
+  </script>
 </body>
 </html>
