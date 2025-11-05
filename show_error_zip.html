@@ -1,21 +1,74 @@
 <!doctype html>
 <html lang="zh-Hant">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>資料表格顯示</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
 <style>
-  :root { font-family: 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif; --bg-gradient: linear-gradient(135deg,#4a90e2,#0078d7); --card-bg:#fff; --shadow:0 6px 20px rgba(0,0,0,0.08); --border-radius:14px; --accent:#0078d7;}
-  body { margin:0; min-height:100vh; background:var(--bg-gradient); display:flex; align-items:center; justify-content:center; color:#222;}
-  .container { width:90%; max-width:1000px; background:var(--card-bg); box-shadow:var(--shadow); border-radius:var(--border-radius); padding:30px 40px; backdrop-filter: blur(8px); animation:fadeIn 0.8s ease;}
-  @keyframes fadeIn { from {opacity:0; transform:translateY(15px);} to {opacity:1; transform:translateY(0);} }
-  h1 { font-size:22px; font-weight:600; color:var(--accent); margin:0 0 20px; text-align:center;}
-  table { width:100%; border-collapse:collapse; font-size:14px;}
-  th, td { padding:10px 12px; border-bottom:1px solid #eee; text-align:left;}
-  th { background:#f9f9fc; cursor:pointer; user-select:none; position:sticky; top:0; font-weight:600;}
+  :root {
+    font-family: 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif;
+    --bg-gradient: linear-gradient(135deg,#4a90e2,#0078d7);
+    --card-bg:#fff;
+    --shadow:0 6px 20px rgba(0,0,0,0.08);
+    --border-radius:14px;
+    --accent:#0078d7;
+  }
+  body {
+    margin:0;
+    min-height:100vh;
+    background:var(--bg-gradient);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    color:#222;
+  }
+  .container {
+    width:90%;
+    max-width:1000px;
+    background:var(--card-bg);
+    box-shadow:var(--shadow);
+    border-radius:var(--border-radius);
+    padding:30px 40px;
+    backdrop-filter: blur(8px);
+    animation:fadeIn 0.8s ease;
+  }
+  @keyframes fadeIn {
+    from {opacity:0; transform:translateY(15px);}
+    to {opacity:1; transform:translateY(0);}
+  }
+  h1 {
+    font-size:22px;
+    font-weight:600;
+    color:var(--accent);
+    margin:0 0 20px;
+    text-align:center;
+  }
+  table {
+    width:100%;
+    border-collapse:collapse;
+    font-size:14px;
+  }
+  th, td {
+    padding:10px 12px;
+    border-bottom:1px solid #eee;
+    text-align:left;
+  }
+  th {
+    background:#f9f9fc;
+    cursor:pointer;
+    user-select:none;
+    position:sticky;
+    top:0;
+    font-weight:600;
+  }
   tr:hover td { background:#f4f8ff; }
-  .empty { text-align:center; padding:40px; color:#666; font-size:15px; }
+  .empty {
+    text-align:center;
+    padding:40px;
+    color:#666;
+    font-size:15px;
+  }
 </style>
 </head>
 <body>
@@ -25,38 +78,40 @@
 </div>
 
 <script>
-// ---------- 在這裡把 Python 產生的 base64 gzip 字串放入 ----------
-const COMPRESSED_DATA = "H4sIAAAAAAAAE...你的 base64 gzip 字串...";
-
-// ---------- JavaScript 解壓縮和表格渲染 ----------
-function base64ToUint8Array(base64) {
-  const raw = atob(base64);
-  const arr = new Uint8Array(raw.length);
-  for(let i=0;i<raw.length;i++) arr[i]=raw.charCodeAt(i);
-  return arr;
+// ---------- 取得 URL query 中的 data ----------
+function getDataFromURL() {
+  const params = new URLSearchParams(window.location.search);
+  const dataStr = params.get('data');
+  if(!dataStr) return null;
+  // decodeURIComponent -> atob -> Uint8Array
+  const compressed = Uint8Array.from(atob(decodeURIComponent(dataStr)), c=>c.charCodeAt(0));
+  const jsonStr = pako.ungzip(compressed, {to:'string'});
+  return JSON.parse(jsonStr);
 }
 
+// ---------- 表格渲染函數 ----------
 function renderTable(data){
-  const wrap = document.getElementById('table-wrap');
-  if(!data.length){ wrap.innerHTML='<div class="empty">無可顯示的資料</div>'; return; }
+  const wrap=document.getElementById('table-wrap');
+  if(!data || !data.length){ wrap.innerHTML='<div class="empty">無資料</div>'; return; }
 
-  const headers = Object.keys(data[0]);
-  const table = document.createElement('table');
-  const thead = document.createElement('thead');
-  const trh = document.createElement('tr');
+  const headers=Object.keys(data[0]);
+  const table=document.createElement('table');
+
+  const thead=document.createElement('thead');
+  const trh=document.createElement('tr');
   headers.forEach((h,idx)=>{
-    const th = document.createElement('th'); th.textContent=h;
+    const th=document.createElement('th'); th.textContent=h;
     th.addEventListener('click', ()=>sortByColumn(idx));
     trh.appendChild(th);
   });
   thead.appendChild(trh);
   table.appendChild(thead);
 
-  const tbody = document.createElement('tbody');
+  const tbody=document.createElement('tbody');
   data.forEach(r=>{
-    const tr = document.createElement('tr');
+    const tr=document.createElement('tr');
     headers.forEach(h=>{
-      const td = document.createElement('td'); td.textContent=r[h] ?? '';
+      const td=document.createElement('td'); td.textContent=r[h]??'';
       tr.appendChild(td);
     });
     tbody.appendChild(tr);
@@ -64,25 +119,24 @@ function renderTable(data){
   table.appendChild(tbody);
   wrap.innerHTML=''; wrap.appendChild(table);
 
-  let sortCol = null, sortAsc=true;
+  // ---------- 表格排序 ----------
+  let sortCol=null, sortAsc=true;
   function sortByColumn(idx){
     const col=headers[idx];
-    if(sortCol===col) sortAsc=!sortAsc; else {sortCol=col; sortAsc=true;}
+    if(sortCol===col) sortAsc=!sortAsc; else { sortCol=col; sortAsc=true; }
     data.sort((a,b)=>{
       const A=a[col]??'', B=b[col]??'';
       const nA=parseFloat(A), nB=parseFloat(B);
-      if(!isNaN(nA)&&!isNaN(nB)) return sortAsc? nA-nB:nB-nA;
-      return sortAsc? String(A).localeCompare(String(B)): String(B).localeCompare(String(A));
+      if(!isNaN(nA) && !isNaN(nB)) return sortAsc? nA-nB : nB-nA;
+      return sortAsc? String(A).localeCompare(String(B)) : String(B).localeCompare(String(A));
     });
     renderTable(data);
   }
 }
 
-// 解壓 base64 gzip
-const compressedArr = base64ToUint8Array(COMPRESSED_DATA);
-const decompressed = pako.ungzip(compressedArr,{to:'string'});
-const jsonData = JSON.parse(decompressed);
-renderTable(jsonData);
+// ---------- 取得資料並渲染 ----------
+const tableData = getDataFromURL();
+renderTable(tableData);
 </script>
 </body>
 </html>
