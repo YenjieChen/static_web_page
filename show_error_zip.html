@@ -231,6 +231,85 @@
     function qs(){ return new URLSearchParams(location.search); }
     function decodeParam(name){ const p = qs().get(name); return p ? decodeURIComponent(p) : null; }
 
+    // Base64 URL-safe decoding helper
+    function base64UrlDecode(str) {
+      // Replace URL-safe characters back to standard Base64
+      str = str.replace(/-/g, '+').replace(/_/g, '/');
+      // Add padding if needed
+      while (str.length % 4) {
+        str += '=';
+      }
+      return atob(str);
+    }
+
+    // Convert string to Uint8Array
+    function stringToUint8Array(str) {
+      const arr = new Uint8Array(str.length);
+      for (let i = 0; i < str.length; i++) {
+        arr[i] = str.charCodeAt(i);
+      }
+      return arr;
+    }
+
+    // Decompress gzip data using modern DecompressionStream API
+    async function decompressGzip(compressedData) {
+      if (typeof DecompressionStream === 'undefined') {
+        throw new Error('DecompressionStream API not supported. Please use a modern browser.');
+      }
+      const stream = new DecompressionStream('gzip');
+      const writer = stream.writable.getWriter();
+      const reader = stream.readable.getReader();
+      
+      // Write data and close writer
+      await writer.write(compressedData);
+      await writer.close();
+      
+      // Read decompressed chunks
+      const chunks = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+      
+      // Combine all chunks
+      const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
+      const result = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const chunk of chunks) {
+        result.set(chunk, offset);
+        offset += chunk.length;
+      }
+      return result;
+    }
+
+    // Get and decompress data from URL
+    async function getDataFromURL() {
+      const dataParam = decodeParam('data');
+      if (!dataParam) {
+        throw new Error('請使用 ?data= 參數傳入 JSON 資料');
+      }
+
+      try {
+        // Try to parse as compressed data first
+        try {
+          // Decode base64 URL-safe
+          const base64Decoded = base64UrlDecode(dataParam);
+          const compressedData = stringToUint8Array(base64Decoded);
+          
+          // Decompress gzip
+          const decompressed = await decompressGzip(compressedData);
+          const jsonString = new TextDecoder().decode(decompressed);
+          return JSON.parse(jsonString);
+        } catch (compressionError) {
+          // If decompression fails, try parsing as plain JSON
+          return JSON.parse(dataParam);
+        }
+      } catch (e) {
+        throw new Error('解析 JSON 資料時發生錯誤: ' + e.message);
+      }
+    }
+
     let data = [];
     let headers = [];
     let sortAsc = true; let sortCol = null;
@@ -370,11 +449,9 @@
       updateStats();
     }
 
-    (function init(){
-      const dataParam = decodeParam('data');
-      if(!dataParam){ renderEmpty('請使用 ?data= 參數傳入 JSON 資料'); return; }
+    (async function init(){
       try {
-        const arr = JSON.parse(dataParam);
+        const arr = await getDataFromURL();
         if(!Array.isArray(arr)) throw new Error('data 必須是陣列');
         data = arr;
         headers = Array.from(new Set(data.flatMap(o=>Object.keys(o))));
@@ -384,7 +461,7 @@
         
         refreshView();
       } catch(e){ 
-        renderEmpty('解析 JSON 資料時發生錯誤: ' + e.message); 
+        renderEmpty(e.message); 
       }
     })();
   })();
