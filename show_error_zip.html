@@ -1,4 +1,4 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
@@ -6,69 +6,19 @@
 <title>資料表格顯示</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
 <style>
-  :root {
-    font-family: 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif;
-    --bg-gradient: linear-gradient(135deg,#4a90e2,#0078d7);
-    --card-bg:#fff;
-    --shadow:0 6px 20px rgba(0,0,0,0.08);
-    --border-radius:14px;
-    --accent:#0078d7;
-  }
   body {
-    margin:0;
-    min-height:100vh;
-    background:var(--bg-gradient);
-    display:flex;
-    align-items:center;
-    justify-content:center;
+    margin:0; font-family: Arial, sans-serif; background:#0078d7; display:flex; justify-content:center; align-items:center; min-height:100vh;
     color:#222;
   }
   .container {
-    width:90%;
-    max-width:1000px;
-    background:var(--card-bg);
-    box-shadow:var(--shadow);
-    border-radius:var(--border-radius);
-    padding:30px 40px;
-    backdrop-filter: blur(8px);
-    animation:fadeIn 0.8s ease;
+    background:#fff; border-radius:12px; padding:30px 40px; max-width:1000px; width:90%; box-shadow:0 6px 20px rgba(0,0,0,0.08);
   }
-  @keyframes fadeIn {
-    from {opacity:0; transform:translateY(15px);}
-    to {opacity:1; transform:translateY(0);}
-  }
-  h1 {
-    font-size:22px;
-    font-weight:600;
-    color:var(--accent);
-    margin:0 0 20px;
-    text-align:center;
-  }
-  table {
-    width:100%;
-    border-collapse:collapse;
-    font-size:14px;
-  }
-  th, td {
-    padding:10px 12px;
-    border-bottom:1px solid #eee;
-    text-align:left;
-  }
-  th {
-    background:#f9f9fc;
-    cursor:pointer;
-    user-select:none;
-    position:sticky;
-    top:0;
-    font-weight:600;
-  }
+  h1 { text-align:center; color:#0078d7; margin-bottom:20px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { padding:10px 12px; border-bottom:1px solid #eee; text-align:left; }
+  th { background:#f9f9fc; cursor:pointer; position:sticky; top:0; }
   tr:hover td { background:#f4f8ff; }
-  .empty {
-    text-align:center;
-    padding:40px;
-    color:#666;
-    font-size:15px;
-  }
+  .empty { text-align:center; padding:40px; color:#666; font-size:15px; }
 </style>
 </head>
 <body>
@@ -78,72 +28,69 @@
 </div>
 
 <script>
-// ---------- 取得 URL query 中的 data ----------
-function getDataFromURL() {
+function renderTable(data){
+    const wrap=document.getElementById('table-wrap');
+    if(!data || !data.length){ wrap.innerHTML='<div class="empty">無資料</div>'; return; }
+
+    const headers=Object.keys(data[0]);
+    const table=document.createElement('table');
+
+    const thead=document.createElement('thead');
+    const trh=document.createElement('tr');
+    headers.forEach((h,idx)=>{
+        const th=document.createElement('th'); th.textContent=h;
+        th.addEventListener('click', ()=>sortByColumn(idx));
+        trh.appendChild(th);
+    });
+    thead.appendChild(trh);
+    table.appendChild(thead);
+
+    const tbody=document.createElement('tbody');
+    data.forEach(r=>{
+        const tr=document.createElement('tr');
+        headers.forEach(h=>{
+            const td=document.createElement('td'); td.textContent=r[h]??'';
+            tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    wrap.innerHTML=''; wrap.appendChild(table);
+
+    let sortCol=null, sortAsc=true;
+    function sortByColumn(idx){
+        const col=headers[idx];
+        if(sortCol===col) sortAsc=!sortAsc; else { sortCol=col; sortAsc=true; }
+        data.sort((a,b)=>{
+            const A=a[col]??'', B=b[col]??'';
+            const nA=parseFloat(A), nB=parseFloat(B);
+            if(!isNaN(nA) && !isNaN(nB)) return sortAsc? nA-nB : nB-nA;
+            return sortAsc? String(A).localeCompare(String(B)) : String(B).localeCompare(String(A));
+        });
+        renderTable(data);
+    }
+}
+
+// 解析 URL 中 data 參數
+function getDataFromURL(){
     const params = new URLSearchParams(window.location.search);
-    const dataStr = params.get('data');
+    let dataStr = params.get('data');
     if(!dataStr) return null;
 
-    const compressed = base64UrlDecode(dataStr);
-    try {
-        const jsonStr = pako.ungzip(compressed, { to: 'string' });
+    // URL-safe Base64 -> 標準 Base64
+    dataStr = dataStr.replace(/-/g,'+').replace(/_/g,'/');
+    while(dataStr.length % 4) dataStr += '=';
+
+    try{
+        const compressed = Uint8Array.from(atob(decodeURIComponent(dataStr)), c=>c.charCodeAt(0));
+        const jsonStr = pako.ungzip(compressed,{to:'string'});
         return JSON.parse(jsonStr);
-    } catch(e) {
-        console.error("解壓縮失敗", e);
+    } catch(e){
+        console.error("解壓縮失敗:", e);
         return null;
     }
 }
 
-// 使用
-const tableData = getDataFromURL();
-renderTable(tableData);
-
-// ---------- 表格渲染函數 ----------
-function renderTable(data){
-  const wrap=document.getElementById('table-wrap');
-  if(!data || !data.length){ wrap.innerHTML='<div class="empty">無資料</div>'; return; }
-
-  const headers=Object.keys(data[0]);
-  const table=document.createElement('table');
-
-  const thead=document.createElement('thead');
-  const trh=document.createElement('tr');
-  headers.forEach((h,idx)=>{
-    const th=document.createElement('th'); th.textContent=h;
-    th.addEventListener('click', ()=>sortByColumn(idx));
-    trh.appendChild(th);
-  });
-  thead.appendChild(trh);
-  table.appendChild(thead);
-
-  const tbody=document.createElement('tbody');
-  data.forEach(r=>{
-    const tr=document.createElement('tr');
-    headers.forEach(h=>{
-      const td=document.createElement('td'); td.textContent=r[h]??'';
-      tr.appendChild(td);
-    });
-    tbody.appendChild(tr);
-  });
-  table.appendChild(tbody);
-  wrap.innerHTML=''; wrap.appendChild(table);
-
-  // ---------- 表格排序 ----------
-  let sortCol=null, sortAsc=true;
-  function sortByColumn(idx){
-    const col=headers[idx];
-    if(sortCol===col) sortAsc=!sortAsc; else { sortCol=col; sortAsc=true; }
-    data.sort((a,b)=>{
-      const A=a[col]??'', B=b[col]??'';
-      const nA=parseFloat(A), nB=parseFloat(B);
-      if(!isNaN(nA) && !isNaN(nB)) return sortAsc? nA-nB : nB-nA;
-      return sortAsc? String(A).localeCompare(String(B)) : String(B).localeCompare(String(A));
-    });
-    renderTable(data);
-  }
-}
-
-// ---------- 取得資料並渲染 ----------
 const tableData = getDataFromURL();
 renderTable(tableData);
 </script>
