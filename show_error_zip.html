@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>資料表格顯示</title>
+  <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
   <style>
     :root {
       font-family: 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif;
@@ -222,91 +223,253 @@
       </div>
       <div class="stats" id="stats"></div>
     </div>
+    <div id="debug-info" style="background: #fff3cd; border: 1px solid #ffc107; padding: 10px; margin: 10px 0; border-radius: 4px; font-size: 12px; display: block;">
+      <strong>調試信息:</strong>
+      <div id="debug-content">正在初始化...</div>
+    </div>
     <div id="table-wrap"></div>
     <div id="card-wrap" class="card-view"></div>
   </div>
 
   <script>
   (function(){
+    // Initialize debug info immediately
+    (function initDebugInfo() {
+      const debugDiv = document.getElementById('debug-info');
+      const debugContent = document.getElementById('debug-content');
+      if (debugDiv && debugContent) {
+        debugContent.textContent = '正在初始化...';
+        debugDiv.style.display = 'block';
+        console.log('調試信息框已初始化');
+      } else {
+        console.error('無法找到調試信息元素');
+      }
+    })();
+    
     function qs(){ return new URLSearchParams(location.search); }
-    function decodeParam(name){ const p = qs().get(name); return p ? decodeURIComponent(p) : null; }
+    function decodeParam(name){ 
+      // URLSearchParams.get() already decodes URL-encoded characters
+      // But we need to ensure it's properly decoded
+      const p = qs().get(name);
+      if (!p) return null;
+      // URLSearchParams automatically decodes, but let's be safe
+      // For base64 strings, we want the raw decoded value
+      return p;
+    }
+
+    // Check if string looks like base64 (URL-safe or standard)
+    function isBase64Like(str) {
+      if (!str || str.length < 10) return false;
+      // Base64 characters: A-Z, a-z, 0-9, +, /, -, _ and =
+      // URL-safe base64 uses - and _ instead of + and /
+      // Check if it starts with gzip magic bytes (H4sI is base64 of 1f 8b)
+      const base64Pattern = /^[A-Za-z0-9+/_-]+=*$/;
+      // If it starts with H4sI, it's definitely compressed gzip data
+      if (str.startsWith('H4sI')) return true;
+      // Otherwise check if it matches base64 pattern
+      return base64Pattern.test(str);
+    }
 
     // Base64 URL-safe decoding helper
     function base64UrlDecode(str) {
-      // Replace URL-safe characters back to standard Base64
-      str = str.replace(/-/g, '+').replace(/_/g, '/');
-      // Add padding if needed
-      while (str.length % 4) {
-        str += '=';
+      try {
+        // Replace URL-safe characters back to standard Base64
+        str = str.replace(/-/g, '+').replace(/_/g, '/');
+        // Add padding if needed (only if not already present)
+        const paddingNeeded = (4 - (str.length % 4)) % 4;
+        if (paddingNeeded > 0) {
+          str += '='.repeat(paddingNeeded);
+        }
+        return atob(str);
+      } catch (e) {
+        throw new Error('Base64 解碼失敗: ' + e.message);
       }
-      return atob(str);
     }
 
-    // Convert string to Uint8Array
+    // Convert binary string to Uint8Array
     function stringToUint8Array(str) {
+      // atob() returns a binary string where each character represents a byte (0-255)
+      // We need to convert each character code to a byte
       const arr = new Uint8Array(str.length);
       for (let i = 0; i < str.length; i++) {
-        arr[i] = str.charCodeAt(i);
+        // Get the character code and ensure it's in byte range (0-255)
+        const byte = str.charCodeAt(i);
+        arr[i] = byte & 0xFF; // Ensure it's a byte value
       }
       return arr;
     }
 
-    // Decompress gzip data using modern DecompressionStream API
+    // Decompress gzip data - try DecompressionStream first, fallback to pako
     async function decompressGzip(compressedData) {
+      console.log('decompressGzip 開始執行');
+      console.log('compressedData 長度:', compressedData.length);
+      console.log('DecompressionStream 是否可用:', typeof DecompressionStream !== 'undefined');
+      console.log('pako 是否可用:', typeof pako !== 'undefined');
+      
+      // Try pako first (more reliable)
+      if (typeof pako !== 'undefined') {
+        try {
+          console.log('使用 pako 解壓...');
+          showDebugInfo('使用 pako 解壓...');
+          const decompressed = pako.inflate(compressedData);
+          console.log('pako 解壓成功，長度:', decompressed.length);
+          showDebugInfo(`✓ pako 解壓成功，長度: ${decompressed.length}`);
+          return decompressed;
+        } catch (pakoError) {
+          console.error('pako 解壓失敗:', pakoError);
+          showDebugInfo(`pako 解壓失敗: ${pakoError.message}，嘗試使用 DecompressionStream...`);
+        }
+      }
+      
+      // Fallback to DecompressionStream
       if (typeof DecompressionStream === 'undefined') {
-        throw new Error('DecompressionStream API not supported. Please use a modern browser.');
-      }
-      const stream = new DecompressionStream('gzip');
-      const writer = stream.writable.getWriter();
-      const reader = stream.readable.getReader();
-      
-      // Write data and close writer
-      await writer.write(compressedData);
-      await writer.close();
-      
-      // Read decompressed chunks
-      const chunks = [];
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
+        const error = 'DecompressionStream API not supported and pako not available. Please use a modern browser or enable pako library.';
+        console.error(error);
+        showDebugInfo(`錯誤: ${error}`);
+        throw new Error(error);
       }
       
-      // Combine all chunks
-      const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
-      const result = new Uint8Array(totalLength);
-      let offset = 0;
-      for (const chunk of chunks) {
-        result.set(chunk, offset);
-        offset += chunk.length;
-      }
-      return result;
+      // Add timeout wrapper
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => {
+          reject(new Error('Gzip 解壓超時（超過 10 秒）'));
+        }, 10000);
+      });
+      
+      const decompressPromise = (async () => {
+        try {
+          console.log('使用 DecompressionStream 解壓...');
+          showDebugInfo('使用 DecompressionStream 解壓...');
+          const stream = new DecompressionStream('gzip');
+          const writer = stream.writable.getWriter();
+          const reader = stream.readable.getReader();
+          
+          await writer.write(compressedData);
+          await writer.close();
+          
+          const chunks = [];
+          let chunkCount = 0;
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            chunkCount++;
+          }
+          
+          if (chunks.length === 0) {
+            throw new Error('解壓後的資料為空');
+          }
+          
+          const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
+          const result = new Uint8Array(totalLength);
+          let offset = 0;
+          for (const chunk of chunks) {
+            result.set(chunk, offset);
+            offset += chunk.length;
+          }
+          console.log('DecompressionStream 解壓成功，長度:', result.length);
+          showDebugInfo(`✓ DecompressionStream 解壓成功，長度: ${result.length}`);
+          return result;
+        } catch (e) {
+          console.error('DecompressionStream 解壓過程出錯:', e);
+          throw e;
+        }
+      })();
+      
+      // Race between decompress and timeout
+      return Promise.race([decompressPromise, timeoutPromise]);
     }
 
     // Get and decompress data from URL
     async function getDataFromURL() {
       const dataParam = decodeParam('data');
+      console.log('getDataFromURL: dataParam 長度:', dataParam ? dataParam.length : 0);
+      console.log('getDataFromURL: dataParam 開始:', dataParam ? dataParam.substring(0, 50) : 'null');
+      
       if (!dataParam) {
         throw new Error('請使用 ?data= 參數傳入 JSON 資料');
       }
 
-      try {
-        // Try to parse as compressed data first
+      // Check if it looks like base64 (compressed data)
+      const isBase64 = isBase64Like(dataParam);
+      console.log('getDataFromURL: 是否為 Base64:', isBase64);
+      
+      if (isBase64) {
         try {
-          // Decode base64 URL-safe
-          const base64Decoded = base64UrlDecode(dataParam);
-          const compressedData = stringToUint8Array(base64Decoded);
+          console.log('開始解壓縮流程...');
+          showDebugInfo('步驟 1: Base64 解碼...');
           
-          // Decompress gzip
-          const decompressed = await decompressGzip(compressedData);
+          // Try to decode and decompress
+          console.log('步驟 1: Base64 解碼');
+          const base64Decoded = base64UrlDecode(dataParam);
+          console.log('Base64 解碼成功, 長度:', base64Decoded.length);
+          showDebugInfo('步驟 2: 轉換為 Uint8Array...');
+          
+          console.log('步驟 2: 轉換為 Uint8Array');
+          const compressedData = stringToUint8Array(base64Decoded);
+          console.log('Uint8Array 長度:', compressedData.length);
+          console.log('前幾個字節:', Array.from(compressedData.slice(0, 10)));
+          
+          // Check gzip magic bytes (1f 8b)
+          if (compressedData[0] === 0x1f && compressedData[1] === 0x8b) {
+            console.log('✓ 檢測到 Gzip magic bytes (1f 8b)');
+            showDebugInfo('步驟 3: Gzip 解壓...\n✓ 檢測到 Gzip magic bytes');
+          } else {
+            console.warn('⚠ 未檢測到 Gzip magic bytes, 前兩個字節:', compressedData[0], compressedData[1]);
+            showDebugInfo(`步驟 3: Gzip 解壓...\n⚠ 未檢測到 Gzip magic bytes: 0x${compressedData[0].toString(16)} 0x${compressedData[1].toString(16)}`);
+          }
+          
+          console.log('步驟 3: Gzip 解壓');
+          showDebugInfo('步驟 3: Gzip 解壓中...\n請稍候...');
+          let decompressed;
+          try {
+            decompressed = await decompressGzip(compressedData);
+            console.log('Gzip 解壓成功, 長度:', decompressed.length);
+            showDebugInfo(`步驟 4: 解碼為 UTF-8 字串...\n✓ Gzip 解壓成功, 長度: ${decompressed.length}`);
+          } catch (decompressError) {
+            console.error('Gzip 解壓失敗:', decompressError);
+            showDebugInfo(`Gzip 解壓失敗: ${decompressError.message}`);
+            throw decompressError;
+          }
+          
+          console.log('步驟 4: 解碼為 UTF-8 字串');
           const jsonString = new TextDecoder().decode(decompressed);
-          return JSON.parse(jsonString);
+          console.log('UTF-8 解碼成功, JSON 長度:', jsonString.length);
+          console.log('JSON 內容:', jsonString.substring(0, 200));
+          showDebugInfo('步驟 5: 解析 JSON...');
+          
+          console.log('步驟 5: 解析 JSON');
+          const result = JSON.parse(jsonString);
+          console.log('JSON 解析成功, 結果類型:', typeof result, '是否為陣列:', Array.isArray(result));
+          if (Array.isArray(result)) {
+            console.log('陣列長度:', result.length);
+            showDebugInfo(`✓ 解壓縮成功！\n陣列長度: ${result.length}`);
+          } else {
+            showDebugInfo(`✓ 解壓縮成功！\n結果類型: ${typeof result}`);
+          }
+          
+          return result;
         } catch (compressionError) {
-          // If decompression fails, try parsing as plain JSON
-          return JSON.parse(dataParam);
+          console.error('解壓縮過程出錯:', compressionError);
+          console.error('錯誤堆疊:', compressionError.stack);
+          const errorMsg = `解壓縮失敗: ${compressionError.message}\n堆疊: ${compressionError.stack || '無堆疊'}`;
+          showDebugInfo(errorMsg);
+          throw new Error('無法解壓縮資料: ' + compressionError.message);
         }
-      } catch (e) {
-        throw new Error('解析 JSON 資料時發生錯誤: ' + e.message);
+      } else {
+        // Not base64, try parsing as plain JSON
+        console.log('嘗試作為普通 JSON 解析');
+        showDebugInfo('嘗試作為普通 JSON 解析...');
+        try {
+          const result = JSON.parse(dataParam);
+          console.log('JSON 解析成功');
+          showDebugInfo('✓ JSON 解析成功');
+          return result;
+        } catch (e) {
+          console.error('JSON 解析失敗:', e);
+          showDebugInfo(`JSON 解析失敗: ${e.message}`);
+          throw new Error('解析 JSON 資料時發生錯誤: ' + e.message);
+        }
       }
     }
 
@@ -318,6 +481,58 @@
     function renderEmpty(msg){ 
       document.getElementById('table-wrap').innerHTML = `<div class="empty">${msg}</div>`;
       document.getElementById('card-wrap').innerHTML = '';
+    }
+    
+    function showDebugInfo(msg) {
+      try {
+        const debugDiv = document.getElementById('debug-info');
+        const debugContent = document.getElementById('debug-content');
+        console.log('showDebugInfo 被調用, 訊息:', msg);
+        console.log('debugDiv:', debugDiv);
+        console.log('debugContent:', debugContent);
+        
+        if (debugDiv && debugContent) {
+          debugContent.textContent = msg;
+          debugDiv.style.display = 'block';
+          console.log('調試信息已顯示');
+        } else {
+          console.error('無法找到調試信息元素');
+          // Create debug info if it doesn't exist
+          if (!debugDiv) {
+            const container = document.querySelector('.container');
+            if (container) {
+              const newDebugDiv = document.createElement('div');
+              newDebugDiv.id = 'debug-info';
+              newDebugDiv.style.cssText = 'background: #fff3cd; border: 1px solid #ffc107; padding: 10px; margin: 10px 0; border-radius: 4px; font-size: 12px; display: block;';
+              newDebugDiv.innerHTML = '<strong>調試信息:</strong><div id="debug-content"></div>';
+              const h1 = container.querySelector('h1');
+              if (h1 && h1.nextSibling) {
+                container.insertBefore(newDebugDiv, h1.nextSibling);
+              } else {
+                container.insertBefore(newDebugDiv, container.firstChild.nextSibling);
+              }
+              const newDebugContent = document.getElementById('debug-content');
+              if (newDebugContent) {
+                newDebugContent.textContent = msg;
+                console.log('已創建調試信息元素並顯示');
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.error('showDebugInfo 出錯:', e);
+      }
+    }
+    
+    function hideDebugInfo() {
+      try {
+        const debugDiv = document.getElementById('debug-info');
+        if (debugDiv) {
+          debugDiv.style.display = 'none';
+        }
+      } catch (e) {
+        console.error('hideDebugInfo 出錯:', e);
+      }
     }
 
     function updateStats(){
@@ -350,7 +565,14 @@
         const tr = document.createElement('tr');
         headers.forEach(h=>{
           const td = document.createElement('td');
-          const value = r[h] ?? '';
+          let value = r[h];
+          if(value === null || value === undefined){
+            value = '';
+          } else if(typeof value === 'object'){
+            value = JSON.stringify(value);
+          } else {
+            value = String(value);
+          }
           td.textContent = value;
           if(value.length > 50){
             td.title = value;
@@ -382,7 +604,14 @@
           
           const value = document.createElement('div');
           value.className = 'card-value';
-          const val = row[h] ?? '';
+          let val = row[h];
+          if(val === null || val === undefined){
+            val = '';
+          } else if(typeof val === 'object'){
+            val = JSON.stringify(val);
+          } else {
+            val = String(val);
+          }
           value.textContent = val;
           if(val.length > 200){
             value.style.maxHeight = '100px';
@@ -432,38 +661,169 @@
     }
 
     function refreshView(){
-      if(!data.length){ 
-        renderEmpty('無可顯示的資料');
+      console.log('refreshView 被調用, currentView:', currentView);
+      console.log('data:', data);
+      console.log('headers:', headers);
+      
+      if(!data || !data.length){ 
+        console.warn('資料為空或無資料');
+        renderEmpty('無可顯示的資料 (資料筆數: ' + (data ? data.length : 0) + ')');
         updateStats();
         return; 
       }
       
+      if(!headers || !headers.length){
+        console.error('無法取得欄位資訊, headers:', headers);
+        renderEmpty('無法取得欄位資訊');
+        updateStats();
+        return;
+      }
+      
+      console.log('準備渲染視圖, 資料筆數:', data.length, '欄位數:', headers.length);
+      console.log('headers:', headers);
+      console.log('data[0]:', data[0]);
+      showDebugInfo(`準備渲染視圖\n資料筆數: ${data.length}\n欄位數: ${headers.length}\n第一筆資料: ${JSON.stringify(data[0]).substring(0, 100)}...`);
+      
       if(currentView === 'table'){
+        console.log('渲染表格視圖');
+        showDebugInfo('渲染表格視圖...');
         const wrap = document.getElementById('table-wrap');
+        if(!wrap){
+          console.error('找不到 table-wrap 元素');
+          showDebugInfo('錯誤: 找不到 table-wrap 元素');
+          return;
+        }
         const tableWrapper = makeTable(headers, data);
+        console.log('makeTable 返回:', tableWrapper);
         wrap.innerHTML='';
         wrap.appendChild(tableWrapper);
+        console.log('表格渲染完成');
+        showDebugInfo('✓ 表格渲染完成');
       } else {
+        console.log('渲染卡片視圖');
+        showDebugInfo('渲染卡片視圖...');
         makeCardView(data);
+        console.log('卡片渲染完成');
+        showDebugInfo('✓ 卡片渲染完成');
       }
       updateStats();
+      console.log('updateStats 完成');
     }
 
-    (async function init(){
+    async function init(){
       try {
+        console.log('=== 初始化函數開始執行 ===');
+        showDebugInfo('初始化函數開始執行...');
+        
+        // Show debug info immediately
+        showDebugInfo('正在載入資料...');
+        console.log('顯示調試信息: 正在載入資料...');
+        
+        // Check if URL has data parameter
+        const urlParams = new URLSearchParams(location.search);
+        const hasDataParam = urlParams.has('data');
+        console.log('URL 是否有 data 參數:', hasDataParam);
+        
+        if (!hasDataParam) {
+          showDebugInfo('錯誤: URL 中沒有 data 參數\n請使用 ?data= 參數傳入資料');
+          renderEmpty('請使用 ?data= 參數傳入 JSON 資料');
+          return;
+        }
+        
+        const dataParam = urlParams.get('data');
+        console.log('data 參數長度:', dataParam ? dataParam.length : 0);
+        showDebugInfo(`正在載入資料...\nData 參數長度: ${dataParam ? dataParam.length : 0}`);
+        
+        showDebugInfo(`正在解壓縮資料...\nData 參數長度: ${dataParam ? dataParam.length : 0}\n開始: ${dataParam ? dataParam.substring(0, 20) : 'null'}...`);
+        
+        console.log('準備調用 getDataFromURL...');
         const arr = await getDataFromURL();
-        if(!Array.isArray(arr)) throw new Error('data 必須是陣列');
+        console.log('getDataFromURL 返回結果:', arr);
+        console.log('資料類型:', typeof arr);
+        console.log('是否為陣列:', Array.isArray(arr));
+        
+        showDebugInfo(`已取得資料\n類型: ${typeof arr}\n是否為陣列: ${Array.isArray(arr)}\n內容: ${JSON.stringify(arr).substring(0, 100)}...`);
+        
+        if(!arr){
+          console.error('資料為空或 null');
+          showDebugInfo('錯誤: 無法取得資料 (資料為空或 null)');
+          renderEmpty('無法取得資料');
+          return;
+        }
+        if(!Array.isArray(arr)){
+          console.error('資料不是陣列，類型:', typeof arr, '值:', arr);
+          const errorMsg = `錯誤: data 必須是陣列，目前類型: ${typeof arr}`;
+          showDebugInfo(errorMsg);
+          throw new Error('data 必須是陣列，目前類型: ' + typeof arr);
+        }
+        if(arr.length === 0){
+          console.warn('資料陣列為空');
+          showDebugInfo('警告: 資料陣列為空');
+          renderEmpty('資料陣列為空');
+          return;
+        }
+        
+        console.log('資料筆數:', arr.length);
+        console.log('第一筆資料:', arr[0]);
+        showDebugInfo(`成功載入 ${arr.length} 筆資料\n第一筆資料: ${JSON.stringify(arr[0]).substring(0, 100)}...`);
+        
         data = arr;
         headers = Array.from(new Set(data.flatMap(o=>Object.keys(o))));
+        console.log('提取的欄位:', headers);
+        console.log('欄位數量:', headers.length);
+        
+        if(!headers || headers.length === 0){
+          console.error('無法提取欄位，資料範例:', data[0]);
+          showDebugInfo('錯誤: 無法從資料中提取欄位\n資料範例: ' + JSON.stringify(data[0]));
+          renderEmpty('無法從資料中提取欄位');
+          return;
+        }
+        
+        showDebugInfo(`成功提取 ${headers.length} 個欄位: ${headers.join(', ')}\n準備渲染...`);
         
         document.getElementById('btn-table').addEventListener('click', ()=> switchView('table'));
         document.getElementById('btn-card').addEventListener('click', ()=> switchView('card'));
         
+        console.log('開始渲染視圖...');
+        showDebugInfo(`開始渲染視圖...\n資料筆數: ${data.length}\n欄位數: ${headers.length}`);
         refreshView();
+        console.log('初始化完成');
+        showDebugInfo(`✓ 渲染完成！\n資料筆數: ${data.length}\n欄位數: ${headers.length}`);
+        
+        // Hide debug info after successful render
+        setTimeout(() => {
+          hideDebugInfo();
+        }, 3000);
+        
       } catch(e){ 
-        renderEmpty(e.message); 
+        console.error('初始化錯誤:', e);
+        console.error('錯誤堆疊:', e.stack);
+        const errorMsg = `錯誤: ${e.message || '發生未知錯誤'}\n堆疊: ${e.stack || '無堆疊信息'}`;
+        console.error('準備顯示錯誤信息:', errorMsg);
+        showDebugInfo(errorMsg);
+        console.log('已顯示錯誤信息');
+        renderEmpty(e.message || '發生未知錯誤'); 
       }
-    })();
+    }
+    
+    // Call init function and ensure it runs
+    console.log('準備調用初始化函數...');
+    showDebugInfo('準備調用初始化函數...');
+    
+    // Execute init function immediately
+    init().catch(function(error) {
+      console.error('初始化函數執行失敗:', error);
+      showDebugInfo('初始化函數執行失敗: ' + error.message);
+      renderEmpty('初始化失敗: ' + error.message);
+    });
+    
+    // Ensure debug info is visible on page load
+    window.addEventListener('DOMContentLoaded', function() {
+      console.log('DOM 已載入');
+      if (document.getElementById('debug-content').textContent === '正在初始化...') {
+        showDebugInfo('頁面已載入，正在初始化...');
+      }
+    });
   })();
   </script>
 </body>
