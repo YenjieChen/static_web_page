@@ -80,13 +80,15 @@
 <script>
 // ---------- 取得 URL query 中的 data ----------
 function getDataFromURL() {
-  const params = new URLSearchParams(window.location.search);
-  const dataStr = params.get('data');
-  if(!dataStr) return null;
-  // decodeURIComponent -> atob -> Uint8Array
-  const compressed = Uint8Array.from(atob(decodeURIComponent(dataStr)), c=>c.charCodeAt(0));
-  const jsonStr = pako.ungzip(compressed, {to:'string'});
-  return JSON.parse(jsonStr);
+    const params = new URLSearchParams(window.location.search);
+    const dataStr = params.get('data');
+    if (!dataStr) return null;
+
+    // URL-safe Base64 -> 標準 Base64
+    const base64Str = dataStr.replace(/-/g,'+').replace(/_/g,'/');
+    const compressed = Uint8Array.from(atob(decodeURIComponent(base64Str)), c => c.charCodeAt(0));
+    const jsonStr = pako.ungzip(compressed, {to:'string'});
+    return JSON.parse(jsonStr);
 }
 
 // ---------- 表格渲染函數 ----------
