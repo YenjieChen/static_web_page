@@ -82,14 +82,21 @@
 function getDataFromURL() {
     const params = new URLSearchParams(window.location.search);
     const dataStr = params.get('data');
-    if (!dataStr) return null;
+    if(!dataStr) return null;
 
-    // URL-safe Base64 -> 標準 Base64
-    const base64Str = dataStr.replace(/-/g,'+').replace(/_/g,'/');
-    const compressed = Uint8Array.from(atob(decodeURIComponent(base64Str)), c => c.charCodeAt(0));
-    const jsonStr = pako.ungzip(compressed, {to:'string'});
-    return JSON.parse(jsonStr);
+    const compressed = base64UrlDecode(dataStr);
+    try {
+        const jsonStr = pako.ungzip(compressed, { to: 'string' });
+        return JSON.parse(jsonStr);
+    } catch(e) {
+        console.error("解壓縮失敗", e);
+        return null;
+    }
 }
+
+// 使用
+const tableData = getDataFromURL();
+renderTable(tableData);
 
 // ---------- 表格渲染函數 ----------
 function renderTable(data){
