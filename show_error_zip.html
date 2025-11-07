@@ -544,6 +544,13 @@
       }
     }
 
+    // Helper function to check if a string contains HTML anchor tags
+    function containsHtmlAnchor(str) {
+      if (!str || typeof str !== 'string') return false;
+      // Check if string contains HTML anchor tag pattern
+      return /<a\s+[^>]*href\s*=\s*["'][^"']*["'][^>]*>.*?<\/a>/i.test(str);
+    }
+
     function makeTable(headers, rows){
       const wrapper = document.createElement('div');
       wrapper.className = 'table-wrapper';
@@ -573,9 +580,14 @@
           } else {
             value = String(value);
           }
-          td.textContent = value;
-          if(value.length > 50){
-            td.title = value;
+          // Check if value contains HTML anchor tags, use innerHTML if so
+          if (containsHtmlAnchor(value)) {
+            td.innerHTML = value;
+          } else {
+            td.textContent = value;
+            if(value.length > 50){
+              td.title = value;
+            }
           }
           tr.appendChild(td);
         });
@@ -612,10 +624,15 @@
           } else {
             val = String(val);
           }
-          value.textContent = val;
-          if(val.length > 200){
-            value.style.maxHeight = '100px';
-            value.style.overflowY = 'auto';
+          // Check if value contains HTML anchor tags, use innerHTML if so
+          if (containsHtmlAnchor(val)) {
+            value.innerHTML = val;
+          } else {
+            value.textContent = val;
+            if(val.length > 200){
+              value.style.maxHeight = '100px';
+              value.style.overflowY = 'auto';
+            }
           }
           
           cardRow.appendChild(label);
