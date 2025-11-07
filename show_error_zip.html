@@ -547,8 +547,26 @@
     // Helper function to check if a string contains HTML anchor tags
     function containsHtmlAnchor(str) {
       if (!str || typeof str !== 'string') return false;
-      // Check if string contains HTML anchor tag pattern
-      return /<a\s+[^>]*href\s*=\s*["'][^"']*["'][^>]*>.*?<\/a>/i.test(str);
+      // Simple check: if string contains <a and </a> tags, it's likely HTML
+      // Also check for href attribute to be more specific
+      return (str.includes('<a') && str.includes('</a>')) || 
+             (str.includes('<a') && str.includes('href'));
+    }
+    
+    // Helper function to check if a field should be rendered as HTML
+    function shouldRenderAsHtml(fieldName, value) {
+      if (!value) return false;
+      
+      // Always render cloudwatch_link as HTML if it's a string
+      if (fieldName === 'cloudwatch_link' && typeof value === 'string') {
+        return true;
+      }
+      
+      // Convert to string if needed for checking
+      const strValue = typeof value === 'string' ? value : String(value);
+      
+      // Check if value contains HTML anchor tags
+      return containsHtmlAnchor(strValue);
     }
 
     function makeTable(headers, rows){
@@ -573,6 +591,8 @@
         headers.forEach(h=>{
           const td = document.createElement('td');
           let value = r[h];
+          let originalValue = value;
+          
           if(value === null || value === undefined){
             value = '';
           } else if(typeof value === 'object'){
@@ -580,8 +600,11 @@
           } else {
             value = String(value);
           }
-          // Check if value contains HTML anchor tags, use innerHTML if so
-          if (containsHtmlAnchor(value)) {
+          
+          // Check if this field should be rendered as HTML
+          const isHtml = shouldRenderAsHtml(h, originalValue) || shouldRenderAsHtml(h, value);
+          
+          if (isHtml) {
             td.innerHTML = value;
           } else {
             td.textContent = value;
@@ -617,6 +640,8 @@
           const value = document.createElement('div');
           value.className = 'card-value';
           let val = row[h];
+          let originalVal = val;
+          
           if(val === null || val === undefined){
             val = '';
           } else if(typeof val === 'object'){
@@ -624,8 +649,11 @@
           } else {
             val = String(val);
           }
-          // Check if value contains HTML anchor tags, use innerHTML if so
-          if (containsHtmlAnchor(val)) {
+          
+          // Check if this field should be rendered as HTML
+          const isHtml = shouldRenderAsHtml(h, originalVal) || shouldRenderAsHtml(h, val);
+          
+          if (isHtml) {
             value.innerHTML = val;
           } else {
             value.textContent = val;
