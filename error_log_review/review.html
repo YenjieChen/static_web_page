@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="VortexAI 錯誤日誌人工關聯審核">
+    <title>人工 Review | VortexAI Error Monitoring</title>
+    <link rel="stylesheet" href="review.css">
+</head>
+<body>
+    <header class="topbar">
+        <div>
+            <p class="eyebrow">VORTEXAI ERROR MONITORING</p>
+            <h1>人工 Review</h1>
+            <p class="subtitle">確認待關聯錯誤日誌是否應連結到建議的 Jira issue</p>
+        </div>
+        <div class="topbar-actions">
+            <a class="btn btn-ghost" href="./">重新開啟 Review</a>
+            <button class="btn btn-primary" id="refresh-btn" type="button">重新整理</button>
+        </div>
+    </header>
+
+    <main class="page-shell">
+        <section class="notice" aria-label="審核說明">
+            <strong>審核原則</strong>
+            <span>請確認環境、服務、錯誤訊息與 traceback 都屬於同一根因，再核准關聯。拒絕候選只會標記為待後續處理，不會自動建立 Jira。</span>
+        </section>
+
+        <section class="summary-grid" aria-label="待審核摘要">
+            <article class="summary-card">
+                <span>待審核 logs</span>
+                <strong id="pending-count">-</strong>
+            </article>
+            <article class="summary-card prod">
+                <span>Prod</span>
+                <strong id="prod-count">-</strong>
+            </article>
+            <article class="summary-card stage">
+                <span>Stage</span>
+                <strong id="stage-count">-</strong>
+            </article>
+            <article class="summary-card candidate">
+                <span>候選 Jira 數</span>
+                <strong id="candidate-count">-</strong>
+            </article>
+        </section>
+
+        <section class="toolbar" aria-label="篩選工具">
+            <label class="search-field">
+                <span>搜尋</span>
+                <input id="search-input" type="search" placeholder="錯誤訊息、Jira key、message ID..." autocomplete="off">
+            </label>
+            <label>
+                <span>環境</span>
+                <select id="site-filter">
+                    <option value="">全部</option>
+                    <option value="prod">Prod</option>
+                    <option value="stage">Stage</option>
+                    <option value="dev">Dev</option>
+                </select>
+            </label>
+            <label>
+                <span>排序</span>
+                <select id="sort-filter">
+                    <option value="similarity">相似度低到高</option>
+                    <option value="latest">最新發生時間</option>
+                    <option value="count">發生次數</option>
+                </select>
+            </label>
+            <label class="checkbox-field">
+                <input id="group-candidates" type="checkbox" checked>
+                <span>依候選 Jira 分組</span>
+            </label>
+        </section>
+
+        <div class="bulk-toolbar">
+            <label class="checkbox-field">
+                <input id="select-all" type="checkbox">
+                <span>全選目前結果</span>
+            </label>
+            <span id="selection-count">未選取項目</span>
+            <button class="btn btn-success" id="bulk-approve-btn" type="button" disabled>核准選取項目</button>
+        </div>
+
+        <section id="review-list" class="review-list" aria-live="polite">
+            <div class="loading-state">正在載入待審核資料...</div>
+        </section>
+    </main>
+
+    <div class="modal-backdrop hidden" id="review-modal" role="presentation">
+        <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+            <div class="modal-header">
+                <div>
+                    <p class="eyebrow" id="modal-eyebrow">人工決定</p>
+                    <h2 id="modal-title">確認關聯</h2>
+                </div>
+                <button class="icon-btn" id="modal-close" type="button" aria-label="關閉">×</button>
+            </div>
+            <div class="modal-body">
+                <div id="modal-review-summary"></div>
+                <label class="modal-field" id="reason-field">
+                    <span>審核備註 <small id="reason-hint">（選填）</small></span>
+                    <textarea id="review-reason" rows="4" placeholder="請記錄判斷依據，例如：同一個 prod RDS root cause，traceback 一致。"></textarea>
+                </label>
+                <p class="modal-warning" id="modal-warning"></p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" id="modal-cancel" type="button">取消</button>
+                <button class="btn btn-primary" id="modal-confirm" type="button">確認</button>
+            </div>
+        </section>
+    </div>
+
+    <div class="toast hidden" id="toast" role="status"></div>
+    <script src="review.js"></script>
+</body>
+</html>
