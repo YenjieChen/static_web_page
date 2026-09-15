@@ -108,7 +108,7 @@ http://127.0.0.1:8765/error_log_review/review.html?demo=1
 - 檢查候選：`POST /jira_issue_embedding*/_search`，以 candidate document ID 查詢
 - 更新：`POST /{index_name}/_update/{document_id}`
 
-查詢只篩選 `association_status = PENDING_REVIEW`。核准前會重新讀取原始文件，確認狀態與 candidate reference 沒有變更，並以 OpenSearch optimistic concurrency parameters 避免覆蓋 stale update。核准會寫入 `MANUAL_LINKED` 與 `jira_reference`；拒絕會寫入 `MANUAL_REJECTED`。
+查詢只篩選 `association_status = PENDING_REVIEW`。核准前會重新讀取原始文件，確認狀態與 candidate reference 沒有變更，並查詢 `jira_issue_embedding*` 取得候選 hit 的 `_id`。核准會將該 embedding document `_id` 寫入 `jira_reference`，而不是將 Jira key（例如 `VEL-1462`）寫入；同時寫入 `MANUAL_LINKED`。拒絕會寫入 `MANUAL_REJECTED`。
 
 瀏覽器直連需要 OpenSearch 允許目前頁面 origin 的 CORS、有效 TLS 憑證，以及具備最小必要權限的帳號。完整注意事項請參考 `error_log_review/MANUAL_REVIEW_API.md`。
 

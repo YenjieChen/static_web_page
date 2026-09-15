@@ -61,7 +61,7 @@ The update writes:
 
 ```json
 {
-  "jira_reference": "review_candidate_reference",
+  "jira_reference": "candidate embedding document _id",
   "association_status": "MANUAL_LINKED",
   "review_decision": "LINK_EXISTING",
   "review_note": "...",

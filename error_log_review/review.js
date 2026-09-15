@@ -183,22 +183,34 @@ class ReviewPage {
 
     async attachCandidateDetails(items) {
         const references = [...new Set(items.map((item) => item.review_candidate_reference).filter(Boolean))];
-        if (!references.length) return;
+        const keys = [...new Set(items.map((item) => item.review_candidate_key).filter(Boolean))];
+        if (!references.length && !keys.length) return;
+        const should = [];
+        if (references.length) should.push({ ids: { values: references } });
+        if (keys.length) {
+            should.push({ terms: { 'key.keyword': keys } });
+            should.push({ terms: { key: keys } });
+        }
         const body = {
-            size: references.length,
+            size: Math.max(references.length, keys.length),
             _source: ['key', 'summary', 'description', 'error_message', 'error_type', 'traceback', 'site', 'status'],
-            query: { ids: { values: references } },
+            query: { bool: { should, minimum_should_match: 1 } },
         };
         const payload = await this.openSearchRequest(`/${CANDIDATE_INDEX}/_search`, {
             method: 'POST',
             body: JSON.stringify(body),
         });
-        const candidates = new Map((payload.hits?.hits || []).map((hit) => [hit._id, {
-            document_id: hit._id,
-            ...(hit._source || {}),
-        }]));
+        const candidates = payload.hits?.hits || [];
         items.forEach((item) => {
-            item.candidate = candidates.get(item.review_candidate_reference) || {
+            const hit = candidates.find((candidateHit) => {
+                const source = candidateHit._source || {};
+                return candidateHit._id === item.review_candidate_reference
+                    || (item.review_candidate_key && source.key === item.review_candidate_key);
+            });
+            item.candidate = hit ? {
+                document_id: hit._id,
+                ...(hit._source || {}),
+            } : {
                 key: item.review_candidate_key,
                 summary: '找不到候選 Jira embedding document',
                 error_message: '',
@@ -299,11 +311,23 @@ class ReviewPage {
         return { source: payload._source || {}, seqNo: payload._seq_no, primaryTerm: payload._primary_term };
     }
 
-    async assertCandidateExists(candidateReference) {
-        if (!candidateReference) throw new Error('此項目沒有候選 embedding reference，不能核准。');
-        const body = { size: 1, query: { ids: { values: [candidateReference] } } };
+    async assertCandidateExists(candidateReference, candidateKey) {
+        if (!candidateReference && !candidateKey) throw new Error('此項目沒有候選 embedding reference 或 Jira key，不能核准。');
+        const should = [];
+        if (candidateReference) should.push({ ids: { values: [candidateReference] } });
+        if (candidateKey) {
+            should.push({ term: { 'key.keyword': candidateKey } });
+            should.push({ term: { key: candidateKey } });
+        }
+        const body = {
+            size: 1,
+            _source: ['key', 'summary', 'error_message', 'error_type', 'traceback', 'description', 'site', 'status'],
+            query: { bool: { should, minimum_should_match: 1 } },
+        };
         const payload = await this.openSearchRequest(`/${CANDIDATE_INDEX}/_search`, { method: 'POST', body: JSON.stringify(body) });
-        if (!payload.hits?.hits?.length) throw new Error('找不到候選 Jira embedding document，不能核准。');
+        const hit = payload.hits?.hits?.[0];
+        if (!hit?._id) throw new Error('找不到候選 Jira embedding document，不能核准。');
+        return { document_id: hit._id, source: hit._source || {} };
     }
 
     async updateLog(item, updates, current) {
@@ -328,13 +352,19 @@ class ReviewPage {
         if (source.association_status !== PENDING_STATUS) {
             throw new Error(`資料狀態已變更為 ${source.association_status || '未設定'}，請重新整理。`);
         }
-        if (source.review_candidate_reference !== item.review_candidate_reference) {
-            throw new Error('候選 reference 已變更，請重新整理後再審核。');
+        if (source.review_candidate_reference !== item.review_candidate_reference
+            && source.review_candidate_key !== item.review_candidate_key) {
+            throw new Error('候選 reference 與 Jira key 都已變更，請重新整理後再審核。');
         }
         if (action === 'approve') {
-            await this.assertCandidateExists(source.review_candidate_reference);
+            const candidate = await this.assertCandidateExists(
+                source.review_candidate_reference,
+                source.review_candidate_key || item.review_candidate_key,
+            );
             await this.updateLog(item, {
-                jira_reference: source.review_candidate_reference,
+                // jira_reference is the OpenSearch embedding document _id,
+                // never the Jira/incident key such as VEL-1462.
+                jira_reference: candidate.document_id,
                 association_status: 'MANUAL_LINKED',
                 review_decision: 'LINK_EXISTING',
                 review_note: reason || '',
