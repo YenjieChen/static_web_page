@@ -39,7 +39,10 @@ class ReviewPage {
 
     bindEvents() {
         document.getElementById('refresh-btn').addEventListener('click', () => this.load());
-        document.getElementById('connect-btn').addEventListener('click', () => this.applyConnectionSettings());
+        document.getElementById('connection-form').addEventListener('submit', (event) => {
+            event.preventDefault();
+            this.applyConnectionSettings();
+        });
         document.getElementById('clear-connection-btn').addEventListener('click', () => this.clearConnectionSettings());
         document.getElementById('search-input').addEventListener('input', () => this.render());
         document.getElementById('site-filter').addEventListener('change', () => this.render());
@@ -93,9 +96,13 @@ class ReviewPage {
             return;
         }
         this.connection = { url, username, password };
-        document.getElementById('connection-status').textContent = '已暫存於本頁記憶體';
+        const host = new URL(url).host;
+        const usernameState = username ? '已輸入' : '未輸入';
+        const passwordState = password ? '已輸入（不顯示）' : '未輸入';
+        document.getElementById('connection-status').textContent = '設定已套用（僅本頁）';
         document.getElementById('connection-status').classList.add('is-ready');
-        this.showToast('設定已暫存於本頁；目前尚未直接連線 OpenSearch。', 'success');
+        document.getElementById('connection-details').textContent = `Host：${host}｜帳號：${usernameState}｜密碼：${passwordState}｜時間：${new Date().toLocaleTimeString('zh-TW')}`;
+        this.showToast('設定已套用並暫存於本頁；目前尚未直接連線 OpenSearch。', 'success');
     }
 
     clearConnectionSettings() {
@@ -104,6 +111,7 @@ class ReviewPage {
         document.getElementById('opensearch-password').value = '';
         document.getElementById('connection-status').textContent = '尚未套用設定';
         document.getElementById('connection-status').classList.remove('is-ready');
+        document.getElementById('connection-details').textContent = '尚未提供連線設定';
         this.showToast('本頁記憶體中的連線設定已清除。', 'success');
     }
 

@@ -29,7 +29,8 @@
             <span class="connection-status" id="connection-status">尚未套用設定</span>
         </div>
         <p class="connection-warning">帳號與密碼只暫存在目前頁面的記憶體，不會寫入 Cookie 或其他瀏覽器儲存。此頁目前不會直接連線 OpenSearch；正式查詢仍需受保護的 Review API。</p>
-        <div class="connection-fields">
+        <div class="connection-details" id="connection-details" aria-live="polite">尚未提供連線設定</div>
+        <form id="connection-form" class="connection-fields">
             <label>
                 <span>OpenSearch URL</span>
                 <input id="opensearch-url" type="url" placeholder="https://your-opensearch-host" autocomplete="url" spellcheck="false">
@@ -43,10 +44,10 @@
                 <input id="opensearch-password" type="password" autocomplete="current-password">
             </label>
             <div class="connection-actions">
-                <button class="btn btn-primary" id="connect-btn" type="button">暫存於本頁</button>
+                <button class="btn btn-primary" id="connect-btn" type="submit">套用設定（僅暫存）</button>
                 <button class="btn btn-ghost" id="clear-connection-btn" type="button">清除帳密</button>
             </div>
-        </div>
+        </form>
     </section>
 
     <main class="page-shell">

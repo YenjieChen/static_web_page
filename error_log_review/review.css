@@ -189,3 +189,12 @@ input:focus, select:focus, textarea:focus { border-color: var(--primary); box-sh
     .connection-actions { flex-direction: column; }
     .connection-actions .btn { width: 100%; }
 }
+
+.connection-details {
+    margin: 0 0 14px;
+    padding: 8px 10px;
+    border-radius: 7px;
+    color: var(--muted);
+    background: #eef2fa;
+    font-size: 12px;
+}
