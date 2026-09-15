@@ -4,7 +4,7 @@
 
 ## Browser configuration
 
-The reviewer enters an HTTPS OpenSearch URL, username, and password in the page. Values are kept only in the current JavaScript object and are cleared when the page is refreshed, closed, or cleared manually. They are not written to cookies, localStorage, sessionStorage, URLs, or public source files.
+The reviewer enters an HTTPS OpenSearch URL, username, and password in the page. The URL and username are kept in browser `localStorage`. The password is kept only in `sessionStorage`, so it survives a reload in the same tab but is cleared when the tab is closed. The values are not written to cookies or URLs, and the Clear button removes all three values.
 
 The browser sends an HTTP Basic Authorization header to the configured OpenSearch URL. This means the browser holds OpenSearch privileges and the OpenSearch account must be least-privilege. Do not use an administrative account.
 

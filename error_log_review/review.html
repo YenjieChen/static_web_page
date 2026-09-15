@@ -28,7 +28,7 @@
             </div>
             <span class="connection-status" id="connection-status">尚未套用設定</span>
         </div>
-        <p class="connection-warning">帳號與密碼只暫存在目前頁面的記憶體，不會寫入 Cookie 或其他瀏覽器儲存。按下套用後，瀏覽器會直接以這組 credentials 查詢 OpenSearch；請確認 OpenSearch 已允許此 GitHub Pages origin 的 CORS，且 TLS 憑證有效。</p>
+        <p class="connection-warning">帳號與密碼不會送到其他服務以外的地方。URL 與帳號會保存在此瀏覽器的 localStorage；密碼只保存在目前分頁的 sessionStorage，關閉分頁後清除。按下查詢後，瀏覽器會直接以這組 credentials 查詢 OpenSearch；請確認 OpenSearch 已允許此 GitHub Pages origin 的 CORS，且 TLS 憑證有效。</p>
         <div class="connection-details" id="connection-details" aria-live="polite">尚未提供連線設定</div>
         <form id="connection-form" class="connection-fields">
             <label>

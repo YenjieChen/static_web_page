@@ -201,3 +201,27 @@ input:focus, select:focus, textarea:focus { border-color: var(--primary); box-sh
 
 .connection-status.is-error { color: #9d2635; background: var(--danger-bg); }
 .connection-status.is-pending { color: #8a5800; background: var(--warning-bg); }
+
+.candidate-group { display: grid; gap: 0; }
+.candidate-group-count { margin-left: 10px; color: var(--muted); font-size: 12px; font-weight: 500; }
+.candidate-logs { display: grid; gap: 14px; margin-top: 14px; }
+.candidate-details { padding: 16px 18px; border: 1px solid #d8d1fa; border-top: 0; background: #fcfbff; }
+.candidate-detail-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.candidate-detail-header h3 { margin: 0; color: #5949a9; font-size: 14px; }
+.candidate-detail-header span { color: var(--muted); font-size: 12px; }
+.candidate-detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
+.candidate-detail-grid h4 { margin: 8px 0 4px; color: var(--muted); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+.candidate-detail-grid h4:first-child { margin-top: 0; }
+.candidate-detail-grid p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.candidate-detail-grid pre { max-height: 180px; overflow: auto; margin: 0; padding: 10px; border-radius: 7px; color: #4f5a70; background: #f3f1ff; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.group-heading > div { display: flex; align-items: baseline; gap: 8px; }
+
+@media (max-width: 800px) {
+    .candidate-detail-grid { grid-template-columns: 1fr; }
+}
+
+.candidate-summary, .candidate-error { margin: 6px 0 0; color: #4f5a70; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.candidate-error strong { color: #5949a9; }
+.candidate-traceback { margin-top: 9px; color: #5949a9; font-size: 12px; }
+.candidate-traceback summary { cursor: pointer; font-weight: 700; }
+.candidate-traceback pre { max-height: 140px; overflow: auto; margin: 6px 0 0; padding: 8px; border-radius: 6px; color: #4f5a70; background: #f3f1ff; font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }

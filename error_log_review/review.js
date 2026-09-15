@@ -2,6 +2,11 @@
 const ERROR_INDEXES = 'error_log_dev_*,error_log_stage_*,error_log_prod_*';
 const CANDIDATE_INDEX = 'jira_issue_embedding*';
 const PENDING_STATUS = 'PENDING_REVIEW';
+const CONNECTION_STORAGE_KEYS = {
+    url: 'errorLogReview.opensearchUrl',
+    username: 'errorLogReview.opensearchUsername',
+    password: 'errorLogReview.opensearchPassword',
+};
 
 const demoItems = [
     {
@@ -12,6 +17,11 @@ const demoItems = [
         timestamp: '2026-09-14T01:00:00Z', review_candidate_key: 'VEL-2146',
         review_candidate_reference: 'demo-embedding-vel-2146', review_similarity: 0.8234,
         review_reason: 'SIMILARITY_IN_GREY_ZONE', index_name: 'error_log_stage_2026_9',
+        candidate: {
+            key: 'VEL-2146', summary: 'PostgreSQL schema migration missing OBJECT_TRACE table',
+            error_message: 'relation "OBJECT_TRACE_*" does not exist', error_type: 'UndefinedTable',
+            traceback: 'psycopg.errors.UndefinedTable: relation does not exist\n  File "app/query.py", line 88, in execute',
+        },
     },
     {
         id: 'demo-prod-002', site: 'prod', message_id: 'demo-prod-002',
@@ -21,6 +31,11 @@ const demoItems = [
         timestamp: '2026-09-14T02:15:00Z', review_candidate_key: 'VEL-2033',
         review_candidate_reference: 'demo-embedding-vel-2033', review_similarity: 0.8071,
         review_reason: 'SIMILARITY_IN_GREY_ZONE', index_name: 'error_log_prod_2026_9',
+        candidate: {
+            key: 'VEL-2033', summary: 'PostgreSQL connection pool exhaustion',
+            error_message: 'Database connection pool exhausted', error_type: 'TimeoutError',
+            traceback: 'TimeoutError: connection pool exhausted\n  File "db/pool.py", line 142, acquire',
+        },
     },
 ];
 
@@ -31,6 +46,7 @@ class ReviewPage {
         this.pendingAction = null;
         this.connection = null;
         this.demoMode = new URLSearchParams(window.location.search).get('demo') === '1';
+        this.restoreConnectionFields();
         this.bindEvents();
         this.load();
     }
@@ -56,6 +72,42 @@ class ReviewPage {
         });
     }
 
+    restoreConnectionFields() {
+        const url = this.readStorage(localStorage, CONNECTION_STORAGE_KEYS.url);
+        const username = this.readStorage(localStorage, CONNECTION_STORAGE_KEYS.username);
+        const password = this.readStorage(sessionStorage, CONNECTION_STORAGE_KEYS.password);
+        document.getElementById('opensearch-url').value = url;
+        document.getElementById('opensearch-username').value = username;
+        document.getElementById('opensearch-password').value = password;
+        if (url || username || password) {
+            document.getElementById('connection-details').textContent = '已恢復上次輸入；請按「直接查詢 OpenSearch」重新建立本頁連線。';
+        }
+    }
+
+    persistConnectionFields(url, username, password) {
+        this.writeStorage(localStorage, CONNECTION_STORAGE_KEYS.url, url);
+        this.writeStorage(localStorage, CONNECTION_STORAGE_KEYS.username, username);
+        this.writeStorage(sessionStorage, CONNECTION_STORAGE_KEYS.password, password);
+    }
+
+    readStorage(storage, key) {
+        try { return storage.getItem(key) || ''; } catch { return ''; }
+    }
+
+    writeStorage(storage, key, value) {
+        try {
+            if (value) storage.setItem(key, value); else storage.removeItem(key);
+        } catch (error) {
+            console.warn('Unable to persist connection setting:', error);
+        }
+    }
+
+    clearStoredConnectionFields() {
+        this.writeStorage(localStorage, CONNECTION_STORAGE_KEYS.url, '');
+        this.writeStorage(localStorage, CONNECTION_STORAGE_KEYS.username, '');
+        this.writeStorage(sessionStorage, CONNECTION_STORAGE_KEYS.password, '');
+    }
+
     async load() {
         if (this.demoMode) {
             this.items = [...demoItems];
@@ -75,6 +127,7 @@ class ReviewPage {
         this.setList('<div class="loading-state">正在直接查詢 OpenSearch 的待審核資料...</div>');
         try {
             this.items = await this.fetchPendingItems();
+            await this.attachCandidateDetails(this.items);
             this.selected.clear();
             this.render();
             this.updateSummary();
@@ -128,6 +181,33 @@ class ReviewPage {
         };
     }
 
+    async attachCandidateDetails(items) {
+        const references = [...new Set(items.map((item) => item.review_candidate_reference).filter(Boolean))];
+        if (!references.length) return;
+        const body = {
+            size: references.length,
+            _source: ['key', 'summary', 'description', 'error_message', 'error_type', 'traceback', 'site', 'status'],
+            query: { ids: { values: references } },
+        };
+        const payload = await this.openSearchRequest(`/${CANDIDATE_INDEX}/_search`, {
+            method: 'POST',
+            body: JSON.stringify(body),
+        });
+        const candidates = new Map((payload.hits?.hits || []).map((hit) => [hit._id, {
+            document_id: hit._id,
+            ...(hit._source || {}),
+        }]));
+        items.forEach((item) => {
+            item.candidate = candidates.get(item.review_candidate_reference) || {
+                key: item.review_candidate_key,
+                summary: '找不到候選 Jira embedding document',
+                error_message: '',
+                error_type: '',
+                traceback: '',
+            };
+        });
+    }
+
     async openSearchRequest(path, options = {}) {
         if (!this.connection) throw new Error('尚未設定 OpenSearch 連線');
         const headers = {
@@ -174,13 +254,15 @@ class ReviewPage {
             return;
         }
         this.connection = { url, username, authorization: this.toBasicAuth(username, password) };
+        this.persistConnectionFields(url, username, password);
         this.setConnectedState('正在直接查詢 OpenSearch...', 'pending');
-        document.getElementById('connection-details').textContent = `Host：${parsed.host}｜帳號：已輸入｜密碼：已輸入（不顯示）｜credentials 僅存在本頁記憶體`;
+        document.getElementById('connection-details').textContent = `Host：${parsed.host}｜帳號：已輸入｜密碼：已輸入（本分頁保存）｜credentials 僅存在本頁記憶體`;
         await this.load();
     }
 
     clearConnectionSettings() {
         this.connection = null;
+        this.clearStoredConnectionFields();
         this.items = [];
         this.selected.clear();
         document.getElementById('opensearch-url').value = '';
@@ -310,6 +392,15 @@ class ReviewPage {
         this.updateSelectionUI(visible);
     }
 
+    renderCandidateDetails(candidate) {
+        return `<div class="candidate-details"><div class="candidate-detail-header"><h3>系統候選根因</h3><span>${this.escape(candidate.status || 'Jira embedding')}</span></div><div class="candidate-detail-grid"><div><h4>Summary</h4><p>${this.escape(candidate.summary || '未提供')}</p><h4>Error message</h4><p>${this.escape(candidate.error_message || '未提供')}</p><h4>Error type</h4><p>${this.escape(candidate.error_type || '未提供')}</p></div><div><h4>Traceback</h4><pre>${this.escape(candidate.traceback || candidate.description || '未提供')}</pre></div></div></div>`;
+    }
+
+    formatSimilarity(items) {
+        const values = items.map((item) => Number(item.review_similarity)).filter(Number.isFinite);
+        return values.length ? `${(Math.max(...values) * 100).toFixed(2)}%` : '未提供';
+    }
+
     renderGrouped(items) {
         const groups = new Map();
         items.forEach((item) => {
@@ -318,8 +409,9 @@ class ReviewPage {
             groups.get(key).push(item);
         });
         return [...groups.values()].map((group) => {
-            const header = `<div class="group-heading"><strong>候選 ${this.escape(group[0].review_candidate_key || group[0].review_candidate_reference || '未指定')}</strong><span>${group.length} 筆 logs</span></div>`;
-            return `${header}${group.map((item) => this.renderCard(item)).join('')}`;
+            const candidate = group[0].candidate || {};
+            const header = `<section class="candidate-group"><div class="group-heading"><div><strong>候選 ${this.escape(candidate.key || group[0].review_candidate_key || group[0].review_candidate_reference || '未指定')}</strong><span class="candidate-group-count">${group.length} 筆 error logs</span></div><span class="badge badge-similarity">相似度最高 ${this.formatSimilarity(group)}</span></div>${this.renderCandidateDetails(candidate)}<div class="candidate-logs">${group.map((item) => this.renderCard(item)).join('')}</div></section>`;
+            return header;
         }).join('');
     }
 
@@ -348,7 +440,7 @@ class ReviewPage {
                             ${this.meta('服務 / Log group', item.log_group || item.service || '—')}
                             ${this.meta('錯誤類型', item.error_type || '—')}
                         </div>
-                        <div class="candidate-box"><h3>系統候選</h3><div class="candidate-key">${this.escape(item.review_candidate_key || '未指定')}</div><small>${this.escape(item.review_reason || '—')}</small></div>
+                        <div class="candidate-box"><h3>系統候選：${this.escape((item.candidate && item.candidate.key) || item.review_candidate_key || '未指定')}</h3><p class="candidate-summary">${this.escape((item.candidate && item.candidate.summary) || '未提供候選摘要')}</p><p class="candidate-error"><strong>Error message：</strong>${this.escape((item.candidate && item.candidate.error_message) || '未提供')}</p><p class="candidate-error"><strong>Error type：</strong>${this.escape((item.candidate && item.candidate.error_type) || '未提供')}</p><details class="candidate-traceback"><summary>候選 Traceback</summary><pre>${this.escape((item.candidate && (item.candidate.traceback || item.candidate.description)) || '未提供')}</pre></details><small>${this.escape(item.review_reason || '—')}</small></div>
                     </div>
                 </div>
                 <div class="card-actions">

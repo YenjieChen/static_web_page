@@ -6,7 +6,7 @@
 
 - 靜態 Review 頁面已完成，可由 GitHub Pages 或其他靜態檔案伺服器提供服務。
 - 非 Demo 模式會直接由 `review.js` 呼叫 OpenSearch REST API。
-- OpenSearch URL、帳號與密碼由使用者在頁面輸入，只存在目前頁面的 JavaScript 記憶體，不會寫入 Cookie、localStorage、sessionStorage 或 URL。
+- OpenSearch URL 與帳號會保存於瀏覽器 `localStorage`；密碼只保存於目前分頁的 `sessionStorage`，關閉分頁後清除。三者都不會寫入 Cookie 或 URL。
 - 這個架構會讓瀏覽器持有 OpenSearch 權限；請使用最小權限帳號，並限制可連線的 origin、索引與網路範圍。
 - 拒絕候選會直接更新 error log 為 `MANUAL_REJECTED`，不會由瀏覽器建立 Jira 或 embedding。
 
@@ -69,7 +69,7 @@ Demo 模式會載入頁面內的範例資料。核准與拒絕只會模擬操作
 
 核准與拒絕也會由瀏覽器直接呼叫 OpenSearch REST API。核准前會重新讀取原始文件，確認仍為 `PENDING_REVIEW`，並確認候選 embedding 存在；拒絕會寫入 `MANUAL_REJECTED`。這些操作會直接修改資料，請先確認帳號權限、CORS、TLS 與索引限制。
 
-帳號與密碼只保存在目前頁面的 JavaScript 記憶體中；重新整理、關閉頁面或按下「清除帳密」後即清除，不會寫入 Cookie、localStorage、sessionStorage 或 URL。
+帳號與 URL 會保存於目前瀏覽器的 `localStorage`，密碼保存於目前分頁的 `sessionStorage`，因此重新整理同一分頁會恢復三個欄位，關閉分頁後密碼會清除。按下「清除帳密」會同步清除畫面與儲存值，不會寫入 Cookie 或 URL。
 
 目前直連功能不使用 `/api/review/*` 或 Lambda。
 本機臨時啟動靜態伺服器的範例：
