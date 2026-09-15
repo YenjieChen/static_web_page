@@ -31,6 +31,7 @@ class ReviewPage {
         this.items = [];
         this.selected = new Set();
         this.pendingAction = null;
+        this.connection = { url: '', username: '', password: '' };
         this.demoMode = new URLSearchParams(window.location.search).get('demo') === '1';
         this.bindEvents();
         this.load();
@@ -38,6 +39,8 @@ class ReviewPage {
 
     bindEvents() {
         document.getElementById('refresh-btn').addEventListener('click', () => this.load());
+        document.getElementById('connect-btn').addEventListener('click', () => this.applyConnectionSettings());
+        document.getElementById('clear-connection-btn').addEventListener('click', () => this.clearConnectionSettings());
         document.getElementById('search-input').addEventListener('input', () => this.render());
         document.getElementById('site-filter').addEventListener('change', () => this.render());
         document.getElementById('sort-filter').addEventListener('change', () => this.render());
@@ -72,6 +75,36 @@ class ReviewPage {
             this.setList('<div class="error-state">無法載入待審核資料。請確認 Review API 已部署，或使用網址參數 <code>?demo=1</code> 預覽頁面。</div>');
             this.updateSummary();
         }
+    }
+
+    applyConnectionSettings() {
+        const url = document.getElementById('opensearch-url').value.trim();
+        const username = document.getElementById('opensearch-username').value;
+        const password = document.getElementById('opensearch-password').value;
+        if (!url) {
+            this.showToast('請輸入 OpenSearch URL。', 'error');
+            return;
+        }
+        try {
+            const parsed = new URL(url);
+            if (parsed.protocol !== 'https:') throw new Error('HTTPS required');
+        } catch {
+            this.showToast('OpenSearch URL 必須是有效的 HTTPS 網址。', 'error');
+            return;
+        }
+        this.connection = { url, username, password };
+        document.getElementById('connection-status').textContent = '已暫存於本頁記憶體';
+        document.getElementById('connection-status').classList.add('is-ready');
+        this.showToast('設定已暫存於本頁；目前尚未直接連線 OpenSearch。', 'success');
+    }
+
+    clearConnectionSettings() {
+        this.connection = { url: '', username: '', password: '' };
+        document.getElementById('opensearch-username').value = '';
+        document.getElementById('opensearch-password').value = '';
+        document.getElementById('connection-status').textContent = '尚未套用設定';
+        document.getElementById('connection-status').classList.remove('is-ready');
+        this.showToast('本頁記憶體中的連線設定已清除。', 'success');
     }
 
     getVisibleItems() {

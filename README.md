@@ -52,6 +52,12 @@ http://localhost:<port>/error_log_review/review.html?demo=1
 
 Demo 模式會載入頁面內的範例資料。核准與拒絕只會模擬操作，不會寫入 OpenSearch 或建立 Jira。
 
+### OpenSearch 測試設定欄位
+
+頁面提供 OpenSearch URL、帳號與密碼欄位，預設 URL 為 `https://43.207.106.51`。按下「暫存於本頁」後，設定只保存在目前頁面的 JavaScript 記憶體中；重新整理、關閉頁面或按下「清除帳密」後即清除，不會寫入 Cookie、localStorage、sessionStorage 或 URL。
+
+目前這些欄位不會讓瀏覽器直接連線 OpenSearch，也不會取代後端 API。正式環境應由受保護的後端驗證帳密並建立短效 session；不要將 OpenSearch credentials 交給前端持久保存。
+
 本機臨時啟動靜態伺服器的範例：
 
 ```bash

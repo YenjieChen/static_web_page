@@ -20,6 +20,35 @@
         </div>
     </header>
 
+    <section class="connection-panel" aria-label="OpenSearch 連線設定">
+        <div class="connection-heading">
+            <div>
+                <p class="eyebrow">OPTIONAL CONNECTION SETTINGS</p>
+                <h2>OpenSearch 連線設定</h2>
+            </div>
+            <span class="connection-status" id="connection-status">尚未套用設定</span>
+        </div>
+        <p class="connection-warning">帳號與密碼只暫存在目前頁面的記憶體，不會寫入 Cookie 或其他瀏覽器儲存。此頁目前不會直接連線 OpenSearch；正式查詢仍需受保護的 Review API。</p>
+        <div class="connection-fields">
+            <label>
+                <span>OpenSearch URL</span>
+                <input id="opensearch-url" type="url" value="https://43.207.106.51" autocomplete="url" spellcheck="false">
+            </label>
+            <label>
+                <span>帳號</span>
+                <input id="opensearch-username" type="text" autocomplete="username" spellcheck="false">
+            </label>
+            <label>
+                <span>密碼</span>
+                <input id="opensearch-password" type="password" autocomplete="current-password">
+            </label>
+            <div class="connection-actions">
+                <button class="btn btn-primary" id="connect-btn" type="button">暫存於本頁</button>
+                <button class="btn btn-ghost" id="clear-connection-btn" type="button">清除帳密</button>
+            </div>
+        </div>
+    </section>
+
     <main class="page-shell">
         <section class="notice" aria-label="審核說明">
             <strong>審核原則</strong>
