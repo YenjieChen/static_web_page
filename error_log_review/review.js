@@ -45,6 +45,7 @@ class ReviewPage {
         this.selected = new Set();
         this.pendingAction = null;
         this.connection = null;
+        this.visibleItems = [];
         this.demoMode = new URLSearchParams(window.location.search).get('demo') === '1';
         this.restoreConnectionFields();
         this.bindEvents();
@@ -58,6 +59,19 @@ class ReviewPage {
             this.applyConnectionSettings();
         });
         document.getElementById('clear-connection-btn').addEventListener('click', () => this.clearConnectionSettings());
+        document.getElementById('review-list').addEventListener('change', (event) => {
+            if (!event.target.matches('[data-select-id]')) return;
+            const id = event.target.dataset.selectId;
+            if (event.target.checked) this.selected.add(id); else this.selected.delete(id);
+            event.target.closest('.review-card')?.classList.toggle('is-selected', event.target.checked);
+            this.updateSelectionUI(this.visibleItems);
+        });
+        document.getElementById('review-list').addEventListener('click', (event) => {
+            const approveButton = event.target.closest('.approve-btn');
+            const rejectButton = event.target.closest('.reject-btn');
+            if (approveButton) this.openAction('approve', approveButton.dataset.actionId);
+            if (rejectButton) this.openAction('reject', rejectButton.dataset.actionId);
+        });
         document.getElementById('search-input').addEventListener('input', () => this.render());
         document.getElementById('site-filter').addEventListener('change', () => this.render());
         document.getElementById('sort-filter').addEventListener('change', () => this.render());
@@ -410,6 +424,7 @@ class ReviewPage {
 
     render() {
         const visible = this.getVisibleItems();
+        this.visibleItems = visible;
         const grouped = document.getElementById('group-candidates').checked;
         if (!visible.length) {
             this.setList('<div class="empty-state">目前沒有符合條件的待審核項目。</div>');
@@ -418,7 +433,6 @@ class ReviewPage {
         }
         const content = grouped ? this.renderGrouped(visible) : visible.map((item) => this.renderCard(item)).join('');
         this.setList(content);
-        this.bindCardEvents();
         this.updateSelectionUI(visible);
     }
 
@@ -483,17 +497,12 @@ class ReviewPage {
     meta(label, value) { return `<div class="meta-item"><span>${this.escape(label)}</span><strong>${this.escape(String(value))}</strong></div>`; }
 
     bindCardEvents() {
-        document.querySelectorAll('[data-select-id]').forEach((checkbox) => checkbox.addEventListener('change', (event) => {
-            const id = event.target.dataset.selectId;
-            if (event.target.checked) this.selected.add(id); else this.selected.delete(id);
-            this.render();
-        }));
-        document.querySelectorAll('.approve-btn').forEach((button) => button.addEventListener('click', () => this.openAction('approve', button.dataset.actionId)));
-        document.querySelectorAll('.reject-btn').forEach((button) => button.addEventListener('click', () => this.openAction('reject', button.dataset.actionId)));
+        // Card events are delegated from #review-list in bindEvents().
+        // Kept as a no-op for compatibility with callers from older versions.
     }
 
     toggleAll(checked) {
-        this.getVisibleItems().forEach((item) => checked ? this.selected.add(item.id) : this.selected.delete(item.id));
+        this.visibleItems.forEach((item) => checked ? this.selected.add(item.id) : this.selected.delete(item.id));
         this.render();
     }
 
