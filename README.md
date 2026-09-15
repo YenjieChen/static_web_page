@@ -1,14 +1,25 @@
 # Error Log Review 靜態頁面
 
-本目錄目前保存錯誤日誌人工 Review 的靜態前端頁面。頁面用於檢視 `PENDING_REVIEW` 錯誤日誌、查看系統建議的 Jira candidate，並由人工核准或拒絕候選關聯。
+本目錄保存錯誤日誌人工 Review 的靜態前端頁面。頁面可直接由瀏覽器以使用者輸入的 OpenSearch credentials 查詢與更新 `PENDING_REVIEW` 錯誤日誌，不依賴 Lambda 或 `/api/review/*` 後端 API。
 
 ## 目前狀態
 
-- 靜態 Review 頁面已完成，可由一般靜態檔案伺服器提供服務。
-- `error_log_review/` 是目前主要的 Review 頁面目錄。
-- 正式 Review API 尚未部署；非 Demo 模式會嘗試呼叫 `/api/review/*`，若 API 不存在會顯示載入失敗。
-- 前端不直接連線 OpenSearch，也不包含 OpenSearch credentials、Jira token 或其他 secrets。
-- 拒絕候選只會送出拒絕操作，不會由瀏覽器自行建立 Jira 或產生 embedding。
+- 靜態 Review 頁面已完成，可由 GitHub Pages 或其他靜態檔案伺服器提供服務。
+- 非 Demo 模式會直接由 `review.js` 呼叫 OpenSearch REST API。
+- OpenSearch URL、帳號與密碼由使用者在頁面輸入，只存在目前頁面的 JavaScript 記憶體，不會寫入 Cookie、localStorage、sessionStorage 或 URL。
+- 這個架構會讓瀏覽器持有 OpenSearch 權限；請使用最小權限帳號，並限制可連線的 origin、索引與網路範圍。
+- 拒絕候選會直接更新 error log 為 `MANUAL_REJECTED`，不會由瀏覽器建立 Jira 或 embedding。
+
+## 直連必要條件
+
+使用直連功能前，OpenSearch 必須：
+
+1. 允許 Review 網頁 origin 的 CORS，包含 `Authorization` 與 `Content-Type` request headers。
+2. 使用瀏覽器信任且 hostname 匹配的 TLS 憑證；IP 位址憑證不匹配時，瀏覽器會拒絕連線。
+3. 提供受限的帳號權限，只允許指定 `error_log_*` 與 `jira_issue_embedding*` 索引的必要查詢／更新操作。
+4. 允許使用者瀏覽器所在網路連到 OpenSearch。
+
+若未滿足 CORS、TLS 或網路條件，瀏覽器會顯示查詢失敗；這不是前端可以繞過的限制。
 
 ## 目錄結構
 
@@ -20,7 +31,7 @@ static_web_page/
 │   ├── review.html             # 人工 Review 頁面
 │   ├── review.css              # Review 頁面樣式
 │   ├── review.js               # Review UI、Demo 與 API client
-│   └── MANUAL_REVIEW_API.md    # 後端 API contract 與安全要求
+│   └── MANUAL_REVIEW_API.md    # 直連 OpenSearch contract 與安全要求
 ├── reports/                    # 可由其他流程放置報表資料
 ├── show_error.html             # 既有錯誤顯示頁面
 └── show_error_zip.html         # 既有錯誤 ZIP 顯示頁面
@@ -44,7 +55,7 @@ http://localhost:<port>/error_log_review/review.html
 
 ### Demo 模式
 
-在尚未部署後端 API 時，可使用 Demo 模式預覽 UI：
+使用 Demo 模式可預覽 UI，不會連線 OpenSearch：
 
 ```text
 http://localhost:<port>/error_log_review/review.html?demo=1
@@ -54,10 +65,13 @@ Demo 模式會載入頁面內的範例資料。核准與拒絕只會模擬操作
 
 ### OpenSearch 測試設定欄位
 
-頁面提供 OpenSearch URL、帳號與密碼欄位，但不在公開檔案中設定或記錄任何預設 OpenSearch endpoint。使用者需在頁面自行輸入 URL。按下「暫存於本頁」後，設定只保存在目前頁面的 JavaScript 記憶體中；重新整理、關閉頁面或按下「清除帳密」後即清除，不會寫入 Cookie、localStorage、sessionStorage 或 URL。
+頁面提供 OpenSearch URL、帳號與密碼欄位，但不在公開檔案中設定或記錄任何預設 OpenSearch endpoint。使用者需在頁面自行輸入 URL，按下「直接查詢 OpenSearch」後，瀏覽器會直接查詢 `error_log_dev_*`、`error_log_stage_*`、`error_log_prod_*` 中的 `PENDING_REVIEW` 文件。
 
-目前這些欄位不會讓瀏覽器直接連線 OpenSearch，也不會取代後端 API。正式環境應由受保護的後端驗證帳密並建立短效 session；不要將 OpenSearch credentials 交給前端持久保存。
+核准與拒絕也會由瀏覽器直接呼叫 OpenSearch REST API。核准前會重新讀取原始文件，確認仍為 `PENDING_REVIEW`，並確認候選 embedding 存在；拒絕會寫入 `MANUAL_REJECTED`。這些操作會直接修改資料，請先確認帳號權限、CORS、TLS 與索引限制。
 
+帳號與密碼只保存在目前頁面的 JavaScript 記憶體中；重新整理、關閉頁面或按下「清除帳密」後即清除，不會寫入 Cookie、localStorage、sessionStorage 或 URL。
+
+目前直連功能不使用 `/api/review/*` 或 Lambda。
 本機臨時啟動靜態伺服器的範例：
 
 ```bash
@@ -83,33 +97,20 @@ http://127.0.0.1:8765/error_log_review/review.html?demo=1
 - 單筆核准、單筆拒絕與批次核准。
 - 拒絕候選時要求填寫審核原因。
 - 對外部資料進行 HTML escaping，避免直接插入未處理字串造成 XSS。
-- API 失敗時顯示錯誤，不假裝操作成功。
+- OpenSearch 查詢或更新失敗時顯示錯誤，不假裝操作成功。
 
-## 後端 API contract
+## OpenSearch REST 操作
 
-正式模式預期使用以下 same-origin API：
+正式模式由 `review.js` 直接呼叫 OpenSearch，不使用 `/api/review/*` 或 Lambda：
 
-```text
-GET  /api/review/pending
-POST /api/review/approve
-POST /api/review/reject
-```
+- 查詢：`POST /error_log_{site}_*/_search`
+- 讀取單筆：`GET /{index_name}/_doc/{document_id}`
+- 檢查候選：`POST /jira_issue_embedding*/_search`，以 candidate document ID 查詢
+- 更新：`POST /{index_name}/_update/{document_id}`
 
-完整 request/response 格式與安全要求請參考：
+查詢只篩選 `association_status = PENDING_REVIEW`。核准前會重新讀取原始文件，確認狀態與 candidate reference 沒有變更，並以 OpenSearch optimistic concurrency parameters 避免覆蓋 stale update。核准會寫入 `MANUAL_LINKED` 與 `jira_reference`；拒絕會寫入 `MANUAL_REJECTED`。
 
-```text
-error_log_review/MANUAL_REVIEW_API.md
-```
-
-後端實作至少必須：
-
-1. 從 OpenSearch 重新讀取指定 error log，不信任瀏覽器傳入的 candidate reference。
-2. 核准前確認當前狀態仍為 `PENDING_REVIEW`，避免 stale update。
-3. 確認 candidate embedding document 存在，且 candidate 與 error log 的環境一致。
-4. 核准既有候選時寫入 `jira_reference` 與 `MANUAL_LINKED`。
-5. 拒絕候選時使用明確的人工拒絕狀態，例如 `MANUAL_REJECTED`，避免 periodic worker 再次重複標記。
-6. 記錄 reviewer、時間、決定、候選與審核備註。
-7. 實作 authentication、authorization 與必要的 CSRF protection。
+瀏覽器直連需要 OpenSearch 允許目前頁面 origin 的 CORS、有效 TLS 憑證，以及具備最小必要權限的帳號。完整注意事項請參考 `error_log_review/MANUAL_REVIEW_API.md`。
 
 ## 驗證紀錄
 
@@ -124,6 +125,7 @@ Review 頁面已完成以下靜態驗證：
 ## 安全注意事項
 
 - 不要將 OpenSearch credentials、Jira token、OpenAI key 或 Teams webhook 放入本目錄。
-- 不要讓瀏覽器直接連線 OpenSearch。
-- 不要讓前端直接接受任意 OpenSearch update body。
+- 直連模式必須使用最小權限 OpenSearch 帳號，不要使用 administrator 帳號。
+- 限制 OpenSearch CORS、TLS、網路來源與可存取索引。
+- 直連瀏覽器不是可信任的安全邊界；使用者可以在 DevTools 檢視或修改 request。
 - `manual_merge_jira_issues.py` 是既有 Jira 合併／刪除工具，不可當作 Review API 使用。

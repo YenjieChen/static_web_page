@@ -1,87 +1,97 @@
-# Manual Review API contract
+# Manual Review direct OpenSearch contract
 
-`review.html` is a static frontend. The browser must not connect directly to OpenSearch or receive OpenSearch/Jira credentials. Deploy the API behind the same origin (or a tightly restricted reverse proxy) and enforce authentication/authorization server-side.
+`review.html` is a static frontend that directly calls OpenSearch from the browser. It does not require Lambda or `/api/review/*`.
 
-## Endpoints
+## Browser configuration
 
-### `GET /api/review/pending`
+The reviewer enters an HTTPS OpenSearch URL, username, and password in the page. Values are kept only in the current JavaScript object and are cleared when the page is refreshed, closed, or cleared manually. They are not written to cookies, localStorage, sessionStorage, URLs, or public source files.
 
-Returns only error logs whose `association_status` is `PENDING_REVIEW`.
+The browser sends an HTTP Basic Authorization header to the configured OpenSearch URL. This means the browser holds OpenSearch privileges and the OpenSearch account must be least-privilege. Do not use an administrative account.
+
+## Required OpenSearch configuration
+
+- CORS must allow the exact Review page origin.
+- CORS must allow request headers `Authorization` and `Content-Type`.
+- CORS must allow methods `GET`, `POST`, `OPTIONS`.
+- TLS certificate validation must pass in the browser and match the configured hostname.
+- The browser network must be allowed to reach OpenSearch.
+- Permissions should be restricted to the required `error_log_dev_*`, `error_log_stage_*`, `error_log_prod_*`, and `jira_issue_embedding*` indexes.
+
+If CORS or TLS is not configured, the browser will report a network failure even when the credentials are correct.
+
+## Read operation
+
+The page sends a search request to:
+
+```text
+POST /error_log_{site}_*/_search
+```
+
+or, when no site filter is selected:
+
+```text
+POST /error_log_dev_*,error_log_stage_*,error_log_prod_*/_search
+```
+
+The query filters for:
 
 ```json
 {
-  "items": [
-    {
-      "id": "OpenSearch document id",
-      "index_name": "error_log_prod_2026_9",
-      "message_id": "OpenSearch document id",
-      "site": "prod",
-      "error_message": "...",
-      "traceback": "...",
-      "error_type": "...",
-      "log_group": "...",
-      "count": 3,
-      "timestamp": "2026-09-14T02:15:00Z",
-      "review_candidate_key": "VEL-1234",
-      "review_candidate_reference": "Jira embedding document id",
-      "review_similarity": 0.8234,
-      "review_reason": "SIMILARITY_IN_GREY_ZONE"
-    }
-  ]
+  "association_status": "PENDING_REVIEW"
 }
 ```
 
-The API should paginate or cap the response for large queues, for example with `?limit=100&cursor=...`.
+The page maps each hit using its `_index`, `_id`, and `_source` fields. The source fields include `review_candidate_reference`, `review_candidate_key`, `review_similarity`, and the error details.
 
-### `POST /api/review/approve`
+## Approve operation
 
-Approves the supplied candidate association. The backend must re-read each source document and verify that it is still `PENDING_REVIEW`; do not trust a stale browser payload.
+For each selected item, the page:
 
-Request:
+1. Reads `GET /{index_name}/_doc/{document_id}` again.
+2. Verifies the document exists and still has `association_status = PENDING_REVIEW`.
+3. Verifies the stored `review_candidate_reference` matches the selected item.
+4. Searches `jira_issue_embedding*` by candidate document ID and requires a hit.
+5. Updates only an allow-listed error-log monthly index with optimistic concurrency parameters:
 
-```json
-{
-  "items": [
-    {
-      "index_name": "error_log_prod_2026_9",
-      "message_id": "OpenSearch document id",
-      "review_candidate_reference": "Jira embedding document id",
-      "review_candidate_key": "VEL-1234"
-    }
-  ],
-  "reason": "Same prod service and same root cause"
-}
+```text
+POST /{index_name}/_update/{message_id}?if_seq_no=...&if_primary_term=...
 ```
 
-For an approved item, the backend should atomically update the error log with:
+The update writes:
 
 ```json
 {
   "jira_reference": "review_candidate_reference",
   "association_status": "MANUAL_LINKED",
   "review_decision": "LINK_EXISTING",
-  "review_note": "..."
+  "review_note": "...",
+  "reviewed_at": "...",
+  "review_candidate_reference": null,
+  "review_candidate_key": null,
+  "review_similarity": null,
+  "review_reason": null
 }
 ```
 
-The backend should clear the pending candidate fields after persisting an audit record. The candidate reference must point to an existing current-year Jira embedding document, and the candidate site must match the error log site.
+## Reject operation
 
-### `POST /api/review/reject`
+The page performs the same status and candidate consistency checks, then writes:
 
-Rejects the candidate without creating a Jira issue.
+```json
+{
+  "association_status": "MANUAL_REJECTED",
+  "review_decision": "REJECT_CANDIDATE",
+  "review_note": "required reason",
+  "reviewed_at": "..."
+}
+```
 
-Request shape is the same as approve, but `reason` is required. A safe implementation should set an explicit terminal/manual state such as `MANUAL_REJECTED` and retain the candidate plus reason in an audit record. Do not simply clear `PENDING_REVIEW` and invoke the periodic worker: it can rediscover the same candidate and mark the log pending again.
+It does not create a Jira issue or embedding.
 
-## Security and audit requirements
+## Important limitations
 
-- Require authenticated users with an operator/reviewer role.
-- Validate `index_name` against the configured `error_log_{site}_{year}_{month}` pattern; never accept arbitrary index names.
-- Validate that `message_id`, candidate reference, and candidate key belong to the same pending document.
-- Use an allow-list for update fields; never accept an arbitrary OpenSearch update body from the browser.
-- Record reviewer identity, decision, timestamp, old status, candidate, reason, and update result.
-- Use CSRF protection if the API uses cookie authentication.
-- Do not return or log credentials, webhook URLs, authorization headers, or full sensitive environment variables.
-
-## Current repository limitation
-
-This repository currently serves the dashboard with Nginx only and does not contain an HTTP API server. The page therefore supports `review.html?demo=1` for UI preview, but normal mode displays an API connection error until these endpoints are implemented and reverse-proxied. The existing `manual_merge_jira_issues.py` is destructive Jira-merge tooling and must not be used as the Review API.
+- This is direct browser-to-OpenSearch access, not a security boundary. A reviewer can inspect or modify requests in browser developer tools.
+- OpenSearch credentials are not stored persistently, but they are necessarily present in browser memory while the page is open.
+- There is no trusted server-side reviewer identity or centralized audit trail in this static-only design.
+- The frontend cannot bypass CORS, TLS, network, or OpenSearch permission errors.
+- `?demo=1` bypasses OpenSearch and uses built-in sample records; demo decisions never write data.
