@@ -46,6 +46,7 @@ class ReviewPage {
         this.pendingAction = null;
         this.connection = null;
         this.visibleItems = [];
+        this.clusterGroups = new Map();
         this.demoMode = new URLSearchParams(window.location.search).get('demo') === '1';
         this.restoreConnectionFields();
         this.bindEvents();
@@ -60,6 +61,14 @@ class ReviewPage {
         });
         document.getElementById('clear-connection-btn').addEventListener('click', () => this.clearConnectionSettings());
         document.getElementById('review-list').addEventListener('change', (event) => {
+            if (event.target.matches('[data-cluster-id]')) {
+                const cluster = this.clusterGroups.get(event.target.dataset.clusterId);
+                if (cluster) {
+                    cluster.forEach((item) => event.target.checked ? this.selected.add(item.id) : this.selected.delete(item.id));
+                    this.updateSelectionUI(this.visibleItems);
+                }
+                return;
+            }
             if (!event.target.matches('[data-select-id]')) return;
             const id = event.target.dataset.selectId;
             if (event.target.checked) this.selected.add(id); else this.selected.delete(id);
@@ -67,15 +76,39 @@ class ReviewPage {
             this.updateSelectionUI(this.visibleItems);
         });
         document.getElementById('review-list').addEventListener('click', (event) => {
-            const approveButton = event.target.closest('.approve-btn');
-            const rejectButton = event.target.closest('.reject-btn');
-            if (approveButton) this.openAction('approve', approveButton.dataset.actionId);
-            if (rejectButton) this.openAction('reject', rejectButton.dataset.actionId);
+            const toggle = event.target.closest('.cluster-toggle');
+            const approveButton = event.target.closest('.approve-btn, .cluster-approve-btn');
+            const rejectButton = event.target.closest('.reject-btn, .cluster-reject-btn');
+            if (toggle) {
+                const target = document.getElementById(toggle.dataset.target);
+                const cluster = this.clusterGroups.get(toggle.dataset.clusterId);
+                if (target && cluster) {
+                    const willOpen = target.classList.contains('hidden');
+                    if (willOpen && target.dataset.loaded !== 'true') {
+                        const representative = cluster[0];
+                        target.innerHTML = `<div class="cluster-representative">代表錯誤：${this.escape(representative.error_message || '未提供')}<br>Traceback：${this.escape(representative.traceback || '未提供')}</div>${cluster.map((item) => this.renderCard(item)).join('')}`;
+                        target.dataset.loaded = 'true';
+                    }
+                    target.classList.toggle('hidden', !willOpen);
+                    toggle.textContent = willOpen ? '收合 cluster logs' : '展開 cluster logs';
+                }
+            }
+            if (approveButton) {
+                const cluster = approveButton.dataset.clusterId ? this.clusterGroups.get(approveButton.dataset.clusterId) : null;
+                this.openAction('approve', cluster ? cluster.map((item) => item.id) : approveButton.dataset.actionId);
+            }
+            if (rejectButton) {
+                const cluster = rejectButton.dataset.clusterId ? this.clusterGroups.get(rejectButton.dataset.clusterId) : null;
+                this.openAction('reject', cluster ? cluster.map((item) => item.id) : rejectButton.dataset.actionId);
+            }
         });
         document.getElementById('search-input').addEventListener('input', () => this.render());
         document.getElementById('site-filter').addEventListener('change', () => this.render());
         document.getElementById('sort-filter').addEventListener('change', () => this.render());
         document.getElementById('group-candidates').addEventListener('change', () => this.render());
+        document.getElementById('cluster-candidates').addEventListener('change', () => this.render());
+        document.getElementById('cluster-candidates').addEventListener('change', () => this.render());
+        document.getElementById('cluster-candidates').addEventListener('change', () => this.render());
         document.getElementById('select-all').addEventListener('change', (event) => this.toggleAll(event.target.checked));
         document.getElementById('bulk-approve-btn').addEventListener('click', () => this.openBulkApprove());
         document.getElementById('modal-close').addEventListener('click', () => this.closeModal());
@@ -452,12 +485,41 @@ class ReviewPage {
             if (!groups.has(key)) groups.set(key, []);
             groups.get(key).push(item);
         });
-        return [...groups.values()].map((group) => {
+        this.clusterGroups = new Map();
+        return [...groups.entries()].map(([candidateKey, group]) => {
             const candidate = group[0].candidate || {};
-            const header = `<section class="candidate-group"><div class="group-heading"><div><strong>候選 ${this.escape(candidate.key || group[0].review_candidate_key || group[0].review_candidate_reference || '未指定')}</strong><span class="candidate-group-count">${group.length} 筆 error logs</span></div><span class="badge badge-similarity">相似度最高 ${this.formatSimilarity(group)}</span></div>${this.renderCandidateDetails(candidate)}<div class="candidate-logs">${group.map((item) => this.renderCard(item)).join('')}</div></section>`;
-            return header;
+            const content = document.getElementById('cluster-candidates').checked
+                ? this.renderCandidateClusters(candidateKey, group)
+                : `${this.renderCandidateDetails(candidate)}<div class="candidate-logs">${group.map((item) => this.renderCard(item)).join('')}</div>`;
+            return `<section class="candidate-group"><div class="group-heading"><div><strong>候選 ${this.escape(candidate.key || candidateKey || '未指定')}</strong><span class="candidate-group-count">${group.length} 筆 error logs</span></div><span class="badge badge-similarity">相似度最高 ${this.formatSimilarity(group)}</span></div>${content}</section>`;
         }).join('');
     }
+
+    renderCandidateClusters(candidateKey, items) {
+        const clusters = new Map();
+        items.forEach((item) => {
+            const clusterKey = this.clusterKey(item);
+            if (!clusters.has(clusterKey)) clusters.set(clusterKey, []);
+            clusters.get(clusterKey).push(item);
+        });
+        return [...clusters.entries()].map(([clusterKey, members], index) => {
+            const clusterId = `cluster-${this.slug(clusterKey)}-${index}`;
+            this.clusterGroups.set(clusterId, members);
+            const representative = members[0];
+            const detailId = `${clusterId}-details`;
+            const totalCount = members.reduce((sum, item) => sum + (Number(item.count) || 0), 0);
+            const selectedCount = members.filter((item) => this.selected.has(item.id)).length;
+            return `<article class="review-cluster"><div class="cluster-summary"><label class="checkbox-field"><input type="checkbox" data-cluster-id="${this.escape(clusterId)}" ${selectedCount === members.length ? 'checked' : ''}><span>選取 cluster</span></label><div class="cluster-main"><strong>Cluster ${index + 1}</strong><span>${members.length} 筆 logs｜總發生次數 ${totalCount}</span><small>${this.escape(this.clusterLabel(representative))}</small></div><div class="cluster-actions"><button class="btn btn-ghost cluster-toggle" type="button" data-target="${this.escape(detailId)}" data-cluster-id="${this.escape(clusterId)}">展開 cluster logs</button><button class="btn btn-danger cluster-reject-btn" type="button" data-cluster-id="${this.escape(clusterId)}">拒絕 cluster</button><button class="btn btn-success cluster-approve-btn" type="button" data-cluster-id="${this.escape(clusterId)}">核准 cluster</button></div></div><div id="${this.escape(detailId)}" class="cluster-details hidden"></div></article>`;
+        }).join('');
+    }
+
+    clusterKey(item) {
+        const normalize = (value) => String(value || '').toLowerCase().replace(/[0-9a-f]{8,}/g, '<id>').replace(/\d+/g, '<n>').replace(/\s+/g, ' ').trim();
+        return `${normalize(item.error_type)}|${normalize(item.error_message)}|${normalize(item.traceback).slice(0, 240)}`;
+    }
+
+    clusterLabel(item) { return `${item.error_type || 'Unknown'}：${item.error_message || '未提供 error message'}`; }
+    slug(value) { return String(value).replace(/[^a-z0-9]+/gi, '-').slice(0, 32) || 'cluster'; }
 
     renderCard(item) {
         const selected = this.selected.has(item.id);

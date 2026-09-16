@@ -225,3 +225,19 @@ input:focus, select:focus, textarea:focus { border-color: var(--primary); box-sh
 .candidate-traceback { margin-top: 9px; color: #5949a9; font-size: 12px; }
 .candidate-traceback summary { cursor: pointer; font-weight: 700; }
 .candidate-traceback pre { max-height: 140px; overflow: auto; margin: 6px 0 0; padding: 8px; border-radius: 6px; color: #4f5a70; background: #f3f1ff; font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.review-cluster { margin: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.cluster-summary { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px; }
+.cluster-summary .checkbox-field { padding-top: 0; }
+.cluster-main { min-width: 0; }
+.cluster-main strong, .cluster-main span, .cluster-main small { display: block; }
+.cluster-main span { color: var(--muted); font-size: 12px; }
+.cluster-main small { overflow: hidden; color: #4f5a70; text-overflow: ellipsis; white-space: nowrap; }
+.cluster-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.cluster-actions .btn { min-height: 32px; padding: 6px 9px; font-size: 12px; }
+.cluster-details { padding: 0 12px 12px; }
+.cluster-representative { margin-bottom: 10px; padding: 9px; border-radius: 7px; color: #4f5a70; background: #f7f9fc; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 800px) {
+    .cluster-summary { grid-template-columns: 1fr; }
+    .cluster-actions { justify-content: flex-start; }
+}
