@@ -192,7 +192,7 @@ class ReviewPage {
         const site = document.getElementById('site-filter').value;
         const indexes = site ? `error_log_${site}_*` : ERROR_INDEXES;
         const body = {
-            size: 1000,
+            size: 10000,
             sort: [{ timestamp: { order: 'desc' } }],
             query: {
                 bool: {
