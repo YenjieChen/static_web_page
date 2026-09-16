@@ -78,7 +78,7 @@ class ReviewPage {
         });
         document.getElementById('review-list').addEventListener('click', (event) => {
             const toggle = event.target.closest('.cluster-toggle');
-            const approveButton = event.target.closest('.approve-btn, .cluster-approve-btn');
+            const approveButton = event.target.closest('.approve-btn, .needs-jira-btn, .cluster-approve-btn, .cluster-needs-jira-btn');
             const rejectButton = event.target.closest('.reject-btn, .cluster-reject-btn');
             if (toggle) {
                 const target = document.getElementById(toggle.dataset.target);
@@ -96,19 +96,20 @@ class ReviewPage {
             }
             if (approveButton) {
                 const cluster = approveButton.dataset.clusterId ? this.clusterGroups.get(approveButton.dataset.clusterId) : null;
-                this.openAction('approve', cluster ? cluster.map((item) => item.id) : approveButton.dataset.actionId);
+                const action = approveButton.dataset.reviewAction || 'approve';
+                this.openAction(action, cluster ? cluster.map((item) => item.id) : approveButton.dataset.actionId);
             }
             if (rejectButton) {
                 const cluster = rejectButton.dataset.clusterId ? this.clusterGroups.get(rejectButton.dataset.clusterId) : null;
-                this.openAction('reject', cluster ? cluster.map((item) => item.id) : rejectButton.dataset.actionId);
+                const action = rejectButton.dataset.reviewAction || 'reject';
+                this.openAction(action, cluster ? cluster.map((item) => item.id) : rejectButton.dataset.actionId);
             }
         });
         document.getElementById('search-input').addEventListener('input', () => this.render());
         document.getElementById('site-filter').addEventListener('change', () => this.render());
+        document.getElementById('review-mode').addEventListener('change', () => this.load());
         document.getElementById('sort-filter').addEventListener('change', () => this.render());
         document.getElementById('group-candidates').addEventListener('change', () => this.render());
-        document.getElementById('cluster-candidates').addEventListener('change', () => this.render());
-        document.getElementById('cluster-candidates').addEventListener('change', () => this.render());
         document.getElementById('cluster-candidates').addEventListener('change', () => this.render());
         document.getElementById('select-all').addEventListener('change', (event) => this.toggleAll(event.target.checked));
         document.getElementById('bulk-approve-btn').addEventListener('click', () => this.openBulkApprove());
@@ -172,14 +173,16 @@ class ReviewPage {
             this.updateSummary();
             return;
         }
-        this.setList('<div class="loading-state">正在直接查詢 OpenSearch 的待審核資料...</div>');
+        const mode = document.getElementById('review-mode').value;
+        const title = mode === 'UNASSOCIATED' ? '待標記需建立新 Jira' : mode === 'MANUAL_NEEDS_NEW_JIRA' ? '待建立新 Jira' : '待審核資料';
+        this.setList(`<div class="loading-state">正在直接查詢 OpenSearch 的${title}...</div>`);
         try {
-            this.items = await this.fetchPendingItems();
+            this.items = await this.fetchQueueItems();
             await this.attachCandidateDetails(this.items);
             this.selected.clear();
             this.render();
             this.updateSummary();
-            this.setConnectedState(`已查詢 ${this.items.length} 筆 PENDING_REVIEW`, 'success');
+            this.setConnectedState(`已查詢 ${this.items.length} 筆 ${document.getElementById('review-mode').value}`, 'success');
         } catch (error) {
             console.error('OpenSearch request failed:', error);
             this.setList(`<div class="error-state">${this.escape(this.describeConnectionError(error))}</div>`);
@@ -188,6 +191,29 @@ class ReviewPage {
         }
     }
 
+
+    async fetchQueueItems() {
+        const mode = document.getElementById('review-mode').value;
+        if (mode === 'PENDING_REVIEW') return this.fetchPendingItems();
+        const site = document.getElementById('site-filter').value;
+        const indexes = site ? `error_log_${site}_*` : ERROR_INDEXES;
+        const missingReference = { bool: { should: [
+            { bool: { must_not: { exists: { field: 'jira_reference' } } } },
+            { term: { 'jira_reference.keyword': '' } },
+            { term: { jira_reference: '' } },
+        ], minimum_should_match: 1 } };
+        const statusFilter = { term: { 'association_status.keyword': mode } };
+        const body = {
+            size: 10000,
+            sort: [{ timestamp: { order: 'desc' } }],
+            query: { bool: { filter: [mode === 'UNASSOCIATED' ? missingReference : statusFilter] } },
+        };
+        const payload = await this.openSearchRequest(`/${this.encodeIndex(indexes)}/_search`, {
+            method: 'POST',
+            body: JSON.stringify(body),
+        });
+        return (payload.hits?.hits || []).map((hit) => this.normalizeHit(hit));
+    }
     async fetchPendingItems() {
         const site = document.getElementById('site-filter').value;
         const indexes = site ? `error_log_${site}_*` : ERROR_INDEXES;
@@ -395,8 +421,18 @@ class ReviewPage {
     }
 
     async applyDecision(item, action, reason) {
+        const mode = document.getElementById('review-mode').value;
         const current = await this.getCurrentLog(item);
         const source = current.source;
+        if (mode === 'UNASSOCIATED' && action === 'mark-new-jira') {
+            await this.updateLog(item, {
+                association_status: 'MANUAL_NEEDS_NEW_JIRA',
+                review_decision: 'CREATE_NEW_JIRA_REQUESTED',
+                review_note: reason || '',
+                reviewed_at: new Date().toISOString(),
+            }, current);
+            return;
+        }
         if (source.association_status !== PENDING_STATUS) {
             throw new Error(`資料狀態已變更為 ${source.association_status || '未設定'}，請重新整理。`);
         }
@@ -512,7 +548,11 @@ class ReviewPage {
             const detailId = `${clusterId}-details`;
             const totalCount = members.reduce((sum, item) => sum + (Number(item.count) || 0), 0);
             const selectedCount = members.filter((item) => this.selected.has(item.id)).length;
-            return `<article class="review-cluster"><div class="cluster-summary"><label class="checkbox-field"><input type="checkbox" data-cluster-id="${this.escape(clusterId)}" ${selectedCount === members.length ? 'checked' : ''}><span>選取 cluster</span></label><div class="cluster-main"><strong>Cluster ${index + 1}</strong><span>${members.length} 筆 logs｜總發生次數 ${totalCount}</span><small>${this.escape(this.clusterLabel(representative))}</small></div><div class="cluster-actions"><button class="btn btn-ghost cluster-toggle" type="button" data-target="${this.escape(detailId)}" data-cluster-id="${this.escape(clusterId)}">展開 cluster logs</button><button class="btn btn-danger cluster-reject-btn" type="button" data-cluster-id="${this.escape(clusterId)}">拒絕 cluster</button><button class="btn btn-success cluster-approve-btn" type="button" data-cluster-id="${this.escape(clusterId)}">核准 cluster</button></div></div><div id="${this.escape(detailId)}" class="cluster-details hidden"></div></article>`;
+            const mode = document.getElementById('review-mode').value;
+            const clusterAction = mode === 'UNASSOCIATED';
+            const clusterActionButton = clusterAction ? `<button class="btn btn-warning cluster-needs-jira-btn" type="button" data-review-action="mark-new-jira" data-cluster-id="${this.escape(clusterId)}">標記需建立新 Jira</button>` : `<button class="btn btn-success cluster-approve-btn" type="button" data-review-action="approve" data-cluster-id="${this.escape(clusterId)}">核准 cluster</button>`;
+            const clusterRejectButton = clusterAction ? '' : `<button class="btn btn-danger cluster-reject-btn" type="button" data-review-action="reject" data-cluster-id="${this.escape(clusterId)}">拒絕 cluster</button>`;
+            return `<article class="review-cluster"><div class="cluster-summary"><label class="checkbox-field"><input type="checkbox" data-cluster-id="${this.escape(clusterId)}" ${selectedCount === members.length ? 'checked' : ''}><span>選取 cluster</span></label><div class="cluster-main"><strong>Cluster ${index + 1}</strong><span>${members.length} 筆 logs｜總發生次數 ${totalCount}</span><small>${this.escape(this.clusterLabel(representative))}</small></div><div class="cluster-actions"><button class="btn btn-ghost cluster-toggle" type="button" data-target="${this.escape(detailId)}" data-cluster-id="${this.escape(clusterId)}">展開 cluster logs</button>${clusterRejectButton}${clusterActionButton}</div></div><div id="${this.escape(detailId)}" class="cluster-details hidden"></div></article>`;
         }).join('');
     }
 
@@ -547,9 +587,17 @@ class ReviewPage {
     slug(value) { return String(value).replace(/[^a-z0-9]+/gi, '-').slice(0, 32) || 'cluster'; }
 
     renderCard(item) {
+        const mode = document.getElementById('review-mode').value;
+        const isUnassociated = mode === 'UNASSOCIATED';
+        const isNewJiraQueue = mode === 'MANUAL_NEEDS_NEW_JIRA';
         const selected = this.selected.has(item.id);
         const site = (item.site || 'unknown').toLowerCase();
         const similarity = Number.isFinite(Number(item.review_similarity)) ? `${(Number(item.review_similarity) * 100).toFixed(2)}%` : '未提供';
+        const actionMarkup = isNewJiraQueue
+            ? '<span class="queue-state">已標記待建立新 Jira</span>'
+            : isUnassociated
+                ? `<button class="btn btn-warning needs-jira-btn" type="button" data-review-action="mark-new-jira" data-action-id="${this.escape(item.id)}">標記需建立新 Jira</button>`
+                : `<button class="btn btn-danger reject-btn" type="button" data-review-action="reject" data-action-id="${this.escape(item.id)}">拒絕候選</button><button class="btn btn-success approve-btn" type="button" data-review-action="approve" data-action-id="${this.escape(item.id)}">核准關聯</button>`;
         return `
             <article class="review-card ${selected ? 'is-selected' : ''}" data-id="${this.escape(item.id)}">
                 <div class="card-top">
@@ -574,10 +622,7 @@ class ReviewPage {
                         <div class="candidate-box"><h3>系統候選：${this.escape((item.candidate && item.candidate.key) || item.review_candidate_key || '未指定')}</h3><p class="candidate-summary">${this.escape((item.candidate && item.candidate.summary) || '未提供候選摘要')}</p><p class="candidate-error"><strong>Error message：</strong>${this.escape((item.candidate && item.candidate.error_message) || '未提供')}</p><p class="candidate-error"><strong>Error type：</strong>${this.escape((item.candidate && item.candidate.error_type) || '未提供')}</p><details class="candidate-traceback"><summary>候選 Traceback</summary><pre>${this.escape((item.candidate && (item.candidate.traceback || item.candidate.description)) || '未提供')}</pre></details><small>${this.escape(item.review_reason || '—')}</small></div>
                     </div>
                 </div>
-                <div class="card-actions">
-                    <button class="btn btn-danger reject-btn" type="button" data-action-id="${this.escape(item.id)}">拒絕候選</button>
-                    <button class="btn btn-success approve-btn" type="button" data-action-id="${this.escape(item.id)}">核准關聯</button>
-                </div>
+                <div class="card-actions">${actionMarkup}</div>
             </article>`;
     }
 
@@ -616,11 +661,15 @@ class ReviewPage {
         const candidateKeys = [...new Set(items.map((item) => item.review_candidate_key).filter(Boolean))];
         document.getElementById('modal-title').textContent = action === 'approve' ? '核准候選關聯' : '拒絕候選關聯';
         document.getElementById('modal-eyebrow').textContent = `${items.length} 筆待審核 logs`;
-        document.getElementById('modal-review-summary').innerHTML = `<p>候選 Jira：<strong>${this.escape(candidateKeys.join(', ') || '未指定')}</strong></p><p>選取 ${items.length} 筆 log。${action === 'approve' ? '核准會直接更新 OpenSearch 中的 error log。' : '拒絕會直接更新 OpenSearch 為人工拒絕，不會建立 Jira。'}</p>`;
-        document.getElementById('review-reason').value = '';
-        document.getElementById('reason-hint').textContent = action === 'reject' ? '（必填）' : '（選填）';
-        document.getElementById('modal-warning').textContent = action === 'approve' ? '請確認候選 issue 與環境、服務及根因一致。此操作會直接修改 OpenSearch。' : '拒絕會直接寫入 MANUAL_REJECTED，不會建立新 Jira；請在備註記錄原因。';
-        document.getElementById('modal-confirm').textContent = action === 'approve' ? '確認直接更新' : '確認直接拒絕';
+        const mode = document.getElementById('review-mode').value;
+        const isUnassociated = mode === 'UNASSOCIATED';
+        const actionButton = action === 'approve' ? '確認直接更新' : isUnassociated ? '標記需建立新 Jira' : '確認直接拒絕';
+        const actionText = action === 'approve' ? '核准會直接更新 OpenSearch 中的 error log。' : isUnassociated ? '此操作只會標記為 MANUAL_NEEDS_NEW_JIRA，不會建立 Jira 或 embedding。' : '拒絕會直接更新 OpenSearch 為人工拒絕，不會建立 Jira。';
+        document.getElementById('modal-review-summary').innerHTML = `<p>候選 Jira：<strong>${this.escape(candidateKeys.join(', ') || '未指定')}</strong></p><p>選取 ${items.length} 筆 log。${actionText}</p>`;
+        document.getElementById('reason-hint').textContent = action === 'approve' || isUnassociated ? '（選填）' : '（必填）';
+        document.getElementById('modal-warning').textContent = action === 'approve' ? '請確認候選 issue 與環境、服務及根因一致。此操作會直接修改 OpenSearch。' : isUnassociated ? '請確認這些 logs 確實需要後續建立新 Jira；目前只會標記，不會自動建單。' : '拒絕會直接寫入 MANUAL_REJECTED，不會建立新 Jira；請在備註記錄原因。';
+        document.getElementById('modal-title').textContent = action === 'approve' ? '核准候選關聯' : isUnassociated ? '標記需建立新 Jira' : '拒絕候選關聯';
+        document.getElementById('modal-confirm').textContent = actionButton;
         document.getElementById('review-modal').classList.remove('hidden');
     }
 
@@ -630,7 +679,7 @@ class ReviewPage {
         if (!this.pendingAction) return;
         const { action, ids } = this.pendingAction;
         const reason = document.getElementById('review-reason').value.trim();
-        if (action === 'reject' && !reason) {
+        if (action === 'reject' && !reason && document.getElementById('review-mode').value !== 'UNASSOCIATED') {
             this.showToast('拒絕候選時必須填寫審核備註。', 'error');
             return;
         }

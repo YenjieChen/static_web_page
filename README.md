@@ -129,3 +129,24 @@ Review 頁面已完成以下靜態驗證：
 - 限制 OpenSearch CORS、TLS、網路來源與可存取索引。
 - 直連瀏覽器不是可信任的安全邊界；使用者可以在 DevTools 檢視或修改 request。
 - `manual_merge_jira_issues.py` 是既有 Jira 合併／刪除工具，不可當作 Review API 使用。
+
+## 未關聯 logs 與待建立 Jira 流程
+
+「審核佇列」提供三種模式：
+
+- `PENDING_REVIEW`：檢視系統候選並核准或拒絕。
+- `UNASSOCIATED`：查詢沒有 `jira_reference` 或 `jira_reference` 為空的 logs，先依錯誤特徵 clustering。
+- `MANUAL_NEEDS_NEW_JIRA`：查看已人工標記、等待後續建立 Jira 的 logs。
+
+在 `UNASSOCIATED` 模式按下「標記需建立新 Jira」只會寫入：
+
+```json
+{
+  "association_status": "MANUAL_NEEDS_NEW_JIRA",
+  "review_decision": "CREATE_NEW_JIRA_REQUESTED",
+  "review_note": "人工備註",
+  "reviewed_at": "..."
+}
+```
+
+此操作不會建立 Jira、不會產生 embedding，也不會呼叫 Jira API。後續應由受信任的 backfill／worker 依 cluster 逐批建立，避免大量重複建單。`MANUAL_NEEDS_NEW_JIRA` 佇列目前是檢視用途，尚未提供自動建立新 Jira 功能。

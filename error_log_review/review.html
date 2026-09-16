@@ -105,7 +105,14 @@
                 <input id="cluster-candidates" type="checkbox" checked>
                 <span>候選內聚類顯示</span>
             </label>
-        </section>
+            <label>
+                <span>審核佇列</span>
+                <select id="review-mode">
+                    <option value="PENDING_REVIEW">候選待審核</option>
+                    <option value="UNASSOCIATED">未關聯 logs</option>
+                    <option value="MANUAL_NEEDS_NEW_JIRA">待建立新 Jira</option>
+                </select>
+            </label>        </section>
 
         <div class="bulk-toolbar">
             <label class="checkbox-field">

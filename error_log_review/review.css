@@ -241,3 +241,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--primary); box-sh
     .cluster-summary { grid-template-columns: 1fr; }
     .cluster-actions { justify-content: flex-start; }
 }
+
+.queue-state { color: var(--warning); font-size: 13px; font-weight: 750; }
+.btn-warning { color: #fff; background: #a26400; }
+.btn-warning:hover:not(:disabled) { background: #805000; }
