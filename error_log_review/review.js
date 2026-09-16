@@ -2,6 +2,7 @@
 const ERROR_INDEXES = 'error_log_dev_*,error_log_stage_*,error_log_prod_*';
 const CANDIDATE_INDEX = 'jira_issue_embedding*';
 const PENDING_STATUS = 'PENDING_REVIEW';
+const CLUSTER_TOKEN_SIMILARITY = 0.45;
 const CONNECTION_STORAGE_KEYS = {
     url: 'errorLogReview.opensearchUrl',
     username: 'errorLogReview.opensearchUsername',
@@ -496,16 +497,18 @@ class ReviewPage {
     }
 
     renderCandidateClusters(candidateKey, items) {
-        const clusters = new Map();
+        const clusters = [];
         items.forEach((item) => {
-            const clusterKey = this.clusterKey(item);
-            if (!clusters.has(clusterKey)) clusters.set(clusterKey, []);
-            clusters.get(clusterKey).push(item);
+            const match = clusters.find((cluster) => this.clusterSimilarity(item, cluster.representative) >= CLUSTER_TOKEN_SIMILARITY);
+            if (match) match.members.push(item);
+            else clusters.push({ representative: item, members: [item] });
         });
-        return [...clusters.entries()].map(([clusterKey, members], index) => {
+        return clusters.map((cluster, index) => {
+            const members = cluster.members;
+            const clusterKey = this.clusterKey(cluster.representative);
             const clusterId = `cluster-${this.slug(clusterKey)}-${index}`;
             this.clusterGroups.set(clusterId, members);
-            const representative = members[0];
+            const representative = cluster.representative;
             const detailId = `${clusterId}-details`;
             const totalCount = members.reduce((sum, item) => sum + (Number(item.count) || 0), 0);
             const selectedCount = members.filter((item) => this.selected.has(item.id)).length;
@@ -514,8 +517,30 @@ class ReviewPage {
     }
 
     clusterKey(item) {
-        const normalize = (value) => String(value || '').toLowerCase().replace(/[0-9a-f]{8,}/g, '<id>').replace(/\d+/g, '<n>').replace(/\s+/g, ' ').trim();
-        return `${normalize(item.error_type)}|${normalize(item.error_message)}|${normalize(item.traceback).slice(0, 240)}`;
+        return `${this.normalizeClusterText(item.error_type)}|${this.normalizeClusterText(item.error_message)}`;
+    }
+
+    normalizeClusterText(value) {
+        return String(value || '').toLowerCase()
+            .replace(/[0-9a-f]{8,}/g, '<id>')
+            .replace(/\b\d+(?:\.\d+)?\b/g, '<n>')
+            .replace(/["'`]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    clusterTokens(item) {
+        const text = `${this.normalizeClusterText(item.error_type)} ${this.normalizeClusterText(item.error_message)} ${this.normalizeClusterText(item.traceback)}`;
+        return new Set(text.split(/[^a-z0-9_<>]+/).filter((token) => token.length > 1));
+    }
+
+    clusterSimilarity(left, right) {
+        const leftTokens = this.clusterTokens(left);
+        const rightTokens = this.clusterTokens(right);
+        if (!leftTokens.size || !rightTokens.size) return 0;
+        const intersection = [...leftTokens].filter((token) => rightTokens.has(token)).length;
+        const union = new Set([...leftTokens, ...rightTokens]).size;
+        return union ? intersection / union : 0;
     }
 
     clusterLabel(item) { return `${item.error_type || 'Unknown'}：${item.error_message || '未提供 error message'}`; }
