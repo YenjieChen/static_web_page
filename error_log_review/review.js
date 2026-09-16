@@ -589,8 +589,18 @@ class ReviewPage {
     }
 
     toggleAll(checked) {
-        this.visibleItems.forEach((item) => checked ? this.selected.add(item.id) : this.selected.delete(item.id));
-        this.render();
+        for (const item of this.visibleItems) {
+            if (checked) this.selected.add(item.id);
+            else this.selected.delete(item.id);
+        }
+        document.querySelectorAll('#review-list [data-cluster-id]').forEach((checkbox) => {
+            checkbox.checked = checked;
+        });
+        document.querySelectorAll('#review-list [data-select-id]').forEach((checkbox) => {
+            checkbox.checked = checked;
+            checkbox.closest('.review-card')?.classList.toggle('is-selected', checked);
+        });
+        this.updateSelectionUI(this.visibleItems);
     }
 
     openBulkApprove() {
