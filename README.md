@@ -136,6 +136,7 @@ Review 頁面已完成以下靜態驗證：
 
 - `PENDING_REVIEW`：檢視系統候選並核准或拒絕。
 - `UNASSOCIATED`：查詢沒有 `jira_reference` 或 `jira_reference` 為空的 logs，先依錯誤特徵 clustering。
+- 時間區間可選最近 `1 天`（預設）、`7 天` 或 `30 天`；查詢會以 error log 的 `timestamp` 欄位套用 OpenSearch range filter。
 - `MANUAL_NEEDS_NEW_JIRA`：查看已人工標記、等待後續建立 Jira 的 logs。
 
 在 `UNASSOCIATED` 模式按下「標記需建立新 Jira」只會寫入：

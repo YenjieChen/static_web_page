@@ -107,6 +107,7 @@ class ReviewPage {
         });
         document.getElementById('search-input').addEventListener('input', () => this.render());
         document.getElementById('site-filter').addEventListener('change', () => this.render());
+        document.getElementById('time-range').addEventListener('change', () => this.load());
         document.getElementById('review-mode').addEventListener('change', () => this.load());
         document.getElementById('sort-filter').addEventListener('change', () => this.render());
         document.getElementById('group-candidates').addEventListener('change', () => this.render());
@@ -185,7 +186,7 @@ class ReviewPage {
             this.selected.clear();
             this.render();
             this.updateSummary();
-            this.setConnectedState(`已查詢 ${this.items.length} 筆 ${document.getElementById('review-mode').value}${this.items.length >= 10000 ? '（已達單批上限，請使用 site 篩選或分批處理）' : ''}`, 'success');
+            this.setConnectedState(`已查詢 ${this.items.length} 筆 ${document.getElementById('review-mode').value}（最近 ${this.getTimeRangeDays()} 天）${this.items.length >= 10000 ? '（已達單批上限，請使用 site 篩選或縮短時間區間）' : ''}`, 'success');
         } catch (error) {
             console.error('OpenSearch request failed:', error);
             this.setList(`<div class="error-state">${this.escape(this.describeConnectionError(error))}</div>`);
@@ -194,6 +195,16 @@ class ReviewPage {
         }
     }
 
+
+    getTimeRangeDays() {
+        return Number(document.getElementById('time-range').value || 1);
+    }
+
+    getTimeRangeFilter() {
+        const end = new Date();
+        const start = new Date(end.getTime() - this.getTimeRangeDays() * 24 * 60 * 60 * 1000);
+        return { range: { timestamp: { gte: start.toISOString(), lte: end.toISOString() } } };
+    }
 
     async fetchQueueItems() {
         const mode = document.getElementById('review-mode').value;
@@ -205,7 +216,7 @@ class ReviewPage {
         const body = {
             size: 10000,
             sort: [{ timestamp: { order: 'desc' } }],
-            query: { bool: { filter: [queueQuery] } },
+            query: { bool: { filter: [this.getTimeRangeFilter(), queueQuery] } },
         };
         const payload = await this.openSearchRequest(`/${this.encodeIndex(indexes)}/_search`, {
             method: 'POST',
@@ -245,15 +256,18 @@ class ReviewPage {
             sort: [{ timestamp: { order: 'desc' } }],
             query: {
                 bool: {
-                    filter: [{
-                        bool: {
-                            should: [
-                                { term: { 'association_status.keyword': PENDING_STATUS } },
-                                { term: { association_status: PENDING_STATUS } },
-                            ],
-                            minimum_should_match: 1,
+                    filter: [
+                        this.getTimeRangeFilter(),
+                        {
+                            bool: {
+                                should: [
+                                    { term: { 'association_status.keyword': PENDING_STATUS } },
+                                    { term: { association_status: PENDING_STATUS } },
+                                ],
+                                minimum_should_match: 1,
+                            },
                         },
-                    }],
+                    ],
                 },
             },
         };
