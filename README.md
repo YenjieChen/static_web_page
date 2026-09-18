@@ -149,4 +149,17 @@ Review 頁面已完成以下靜態驗證：
 }
 ```
 
-此操作不會建立 Jira、不會產生 embedding，也不會呼叫 Jira API。後續應由受信任的 backfill／worker 依 cluster 逐批建立，避免大量重複建單。`MANUAL_NEEDS_NEW_JIRA` 佇列目前是檢視用途，尚未提供自動建立新 Jira 功能。
+此操作不會建立 Jira、不會產生 embedding，也不會呼叫 Jira API。`MANUAL_NEEDS_NEW_JIRA` 代表人工確認後的後續處理項目。
+
+Association worker 對於找不到既有 Jira 的資料會自動建立 embedding 與 Jira。若本批次找到高相似但尚無 Jira `key` 的 candidate，會依 candidate document `_id` 分組，於本批次結束時統一建立一個 Jira，避免同一 candidate 重複建單。
+
+### Weekly Report pending association 對應
+
+Weekly Report 的 pending association 包含兩類：
+
+- `jira_reference` 缺失或為空。
+- `jira_reference` 有值，但該值不是 `jira_issue_embedding*` 中存在的 document `_id`。
+
+Review 的 `UNASSOCIATED` 佇列會先抓取每批最多 10,000 筆 error logs，再以候選 embedding document `_id` 驗證 reference；candidate document 存在但沒有 Jira `key` 時，也會列入未關聯結果。若總數超過 10,000 筆，請使用 Prod／Stage／Dev site filter 分批查詢；頁面會在達到上限時顯示提示。
+
+Association worker 對於找不到既有 Jira 的資料會自動建立 embedding 與 Jira。若本批次找到高相似但尚無 Jira `key` 的 candidate，會依 candidate document `_id` 分組，於本批次結束時統一建立一個 Jira，避免同一 candidate 重複建單。

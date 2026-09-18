@@ -178,11 +178,14 @@ class ReviewPage {
         this.setList(`<div class="loading-state">正在直接查詢 OpenSearch 的${title}...</div>`);
         try {
             this.items = await this.fetchQueueItems();
+            if (document.getElementById('review-mode').value === 'UNASSOCIATED') {
+                this.items = await this.filterInvalidReferences(this.items);
+            }
             await this.attachCandidateDetails(this.items);
             this.selected.clear();
             this.render();
             this.updateSummary();
-            this.setConnectedState(`已查詢 ${this.items.length} 筆 ${document.getElementById('review-mode').value}`, 'success');
+            this.setConnectedState(`已查詢 ${this.items.length} 筆 ${document.getElementById('review-mode').value}${this.items.length >= 10000 ? '（已達單批上限，請使用 site 篩選或分批處理）' : ''}`, 'success');
         } catch (error) {
             console.error('OpenSearch request failed:', error);
             this.setList(`<div class="error-state">${this.escape(this.describeConnectionError(error))}</div>`);
@@ -197,22 +200,42 @@ class ReviewPage {
         if (mode === 'PENDING_REVIEW') return this.fetchPendingItems();
         const site = document.getElementById('site-filter').value;
         const indexes = site ? `error_log_${site}_*` : ERROR_INDEXES;
-        const missingReference = { bool: { should: [
-            { bool: { must_not: { exists: { field: 'jira_reference' } } } },
-            { term: { 'jira_reference.keyword': '' } },
-            { term: { jira_reference: '' } },
-        ], minimum_should_match: 1 } };
         const statusFilter = { term: { 'association_status.keyword': mode } };
+        const queueQuery = mode === 'UNASSOCIATED' ? { match_all: {} } : statusFilter;
         const body = {
             size: 10000,
             sort: [{ timestamp: { order: 'desc' } }],
-            query: { bool: { filter: [mode === 'UNASSOCIATED' ? missingReference : statusFilter] } },
+            query: { bool: { filter: [queueQuery] } },
         };
         const payload = await this.openSearchRequest(`/${this.encodeIndex(indexes)}/_search`, {
             method: 'POST',
             body: JSON.stringify(body),
         });
         return (payload.hits?.hits || []).map((hit) => this.normalizeHit(hit));
+    }
+
+    async filterInvalidReferences(items) {
+        const references = [...new Set(items.map((item) => item.jira_reference).filter((value) => value && value !== 'null' && value !== 'None'))];
+        if (!references.length) return items;
+        const validReferences = new Set();
+        for (let offset = 0; offset < references.length; offset += 500) {
+            const batch = references.slice(offset, offset + 500);
+            const payload = await this.openSearchRequest(`/${CANDIDATE_INDEX}/_search`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    size: batch.length,
+                    _source: ['key'],
+                    query: { ids: { values: batch } },
+                }),
+            });
+            (payload.hits?.hits || []).forEach((hit) => {
+                if (hit._source?.key) validReferences.add(hit._id);
+            });
+        }
+        return items.filter((item) => {
+            const reference = item.jira_reference;
+            return !reference || reference === 'null' || reference === 'None' || !validReferences.has(reference);
+        });
     }
     async fetchPendingItems() {
         const site = document.getElementById('site-filter').value;
