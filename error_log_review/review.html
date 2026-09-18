@@ -147,6 +147,10 @@
             </div>
             <div class="modal-body">
                 <div id="modal-review-summary"></div>
+                <label class="modal-field hidden" id="existing-jira-field">
+                    <span>既有 Jira key</span>
+                    <input id="existing-jira-key" type="text" placeholder="例如 VEL-1276" autocomplete="off">
+                </label>
                 <label class="modal-field" id="reason-field">
                     <span>審核備註 <small id="reason-hint">（選填）</small></span>
                     <textarea id="review-reason" rows="4" placeholder="請記錄判斷依據，例如：同一個 prod RDS root cause，traceback 一致。"></textarea>

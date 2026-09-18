@@ -139,7 +139,11 @@ Review 頁面已完成以下靜態驗證：
 - 時間區間可選最近 `1 天`（預設）、`7 天` 或 `30 天`；查詢會以 error log 的 `timestamp` 欄位套用 OpenSearch range filter。
 - `MANUAL_NEEDS_NEW_JIRA`：查看已人工標記、等待後續建立 Jira 的 logs。
 
-在 `UNASSOCIATED` 模式按下「標記需建立新 Jira」只會寫入：
+在 `UNASSOCIATED` 模式可選擇「連結既有 Jira」或「標記需建立新 Jira」。
+
+「連結既有 Jira」需要輸入 Jira key。系統會查詢並驗證對應的 embedding document、site 與 log group，然後將 error log 的 `jira_reference` 寫成 embedding document `_id`，並寫入 `MANUAL_LINKED`。此操作不會建立 Jira。
+
+按下「標記需建立新 Jira」只會寫入：
 
 ```json
 {
