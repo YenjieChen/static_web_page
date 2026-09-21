@@ -304,7 +304,7 @@ class ReviewPage {
         }
         const body = {
             size: Math.max(references.length, keys.length),
-            _source: ['key', 'summary', 'description', 'error_message', 'error_type', 'traceback', 'site', 'status'],
+            _source: ['key', 'summary', 'description', 'error_message', 'error_type', 'traceback', 'site', 'status', 'log_group', 'embedding'],
             query: { bool: { should, minimum_should_match: 1 } },
         };
         const payload = await this.openSearchRequest(`/${CANDIDATE_INDEX}/_search`, {
@@ -441,6 +441,37 @@ class ReviewPage {
         return { document_id: hit._id, source: hit._source || {} };
     }
 
+    async findSimilarKeyedCandidates(embedding, site, logGroup, limit = 3) {
+        if (!Array.isArray(embedding) || !embedding.length) return [];
+        const body = {
+            size: limit,
+            _source: ['key', 'summary', 'error_message', 'error_type', 'site', 'log_group', 'status'],
+            query: {
+                knn: { embedding: { vector: embedding, k: Math.max(limit * 5, 20) } },
+            },
+            post_filter: {
+                bool: {
+                    must: [{ term: { site } }],
+                    must_not: [{ term: { status: 'SUB ISSUES' } }],
+                },
+            },
+        };
+        let payload;
+        try {
+            payload = await this.openSearchRequest(`/${CANDIDATE_INDEX}/_search`, {
+                method: 'POST',
+                body: JSON.stringify(body),
+            });
+        } catch (error) {
+            console.warn('kNN suggestion query failed:', error);
+            return [];
+        }
+        return (payload.hits?.hits || [])
+            .map((hit) => ({ document_id: hit._id, score: hit._score, ...(hit._source || {}) }))
+            .filter((candidate) => candidate.key && (!logGroup || candidate.log_group === logGroup))
+            .slice(0, limit);
+    }
+
     async assertExistingJiraByKey(jiraKey, item, source) {
         const normalizedKey = String(jiraKey || '').trim();
         if (!/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(normalizedKey)) {
@@ -497,7 +528,41 @@ class ReviewPage {
         }
     }
 
-    async applyDecision(item, action, reason, existingJiraKey = '') {
+    async markCandidatePendingCreate(item, source) {
+        const candidateId = source.jira_reference;
+        if (!candidateId || candidateId === 'null' || candidateId === 'None') {
+            throw new Error('此 log 沒有指向任何候選 embedding document，無法標記建立新 Jira。');
+        }
+        const payload = await this.openSearchRequest(`/${CANDIDATE_INDEX}/_search`, {
+            method: 'POST',
+            body: JSON.stringify({
+                size: 1,
+                seq_no_primary_term: true,
+                _source: ['key', 'jira_creation_status'],
+                query: { ids: { values: [candidateId] } },
+            }),
+        });
+        const hit = payload.hits?.hits?.[0];
+        if (!hit) {
+            throw new Error('候選 embedding document 不存在，請重新整理後再試。');
+        }
+        const candidateSource = hit._source || {};
+        if (candidateSource.key) {
+            throw new Error(`候選 embedding document 已經有 Jira key ${candidateSource.key}，不需要再標記建立新 Jira。`);
+        }
+        if (candidateSource.jira_creation_status === 'PENDING_CREATE' || candidateSource.jira_creation_status === 'CREATING') {
+            throw new Error('此候選已標記為待建立新 Jira，請等待後端任務處理。');
+        }
+        await this.openSearchRequest(
+            `/${this.encodeIndex(hit._index)}/_update/${this.encodeId(candidateId)}?if_seq_no=${encodeURIComponent(hit._seq_no)}&if_primary_term=${encodeURIComponent(hit._primary_term)}`,
+            {
+                method: 'POST',
+                body: JSON.stringify({ doc: { jira_creation_status: 'PENDING_CREATE' } }),
+            },
+        );
+    }
+
+    async applyDecision(item, action, reason, existingJiraKey = '', createNewJira = false) {
         const mode = document.getElementById('review-mode').value;
         const current = await this.getCurrentLog(item);
         const source = current.source;
@@ -508,6 +573,13 @@ class ReviewPage {
                 review_note: reason || '',
                 reviewed_at: new Date().toISOString(),
             }, current);
+            return;
+        }
+        if (mode === 'UNASSOCIATED' && action === 'link-existing' && createNewJira) {
+            if ((source.jira_reference || '') !== (item.jira_reference || '')) {
+                throw new Error('此 log 的 jira_reference 已變更，請重新整理後再標記。');
+            }
+            await this.markCandidatePendingCreate(item, source);
             return;
         }
         if (mode === 'UNASSOCIATED' && action === 'link-existing') {
@@ -759,17 +831,50 @@ class ReviewPage {
         const isUnassociated = mode === 'UNASSOCIATED';
         const isLinkExisting = action === 'link-existing';
         const actionButton = isLinkExisting ? '確認連結既有 Jira' : action === 'approve' ? '確認直接更新' : isUnassociated ? '標記需建立新 Jira' : '確認直接拒絕';
-        const actionText = isLinkExisting ? '輸入既有 Jira key 後，系統會驗證 embedding document、site 與 log group，再更新 error log。' : action === 'approve' ? '核准會直接更新 OpenSearch 中的 error log。' : isUnassociated ? '此操作只會標記為 MANUAL_NEEDS_NEW_JIRA，不會建立 Jira 或 embedding。' : '拒絕會直接更新 OpenSearch 為人工拒絕，不會建立 Jira。';
+        const actionText = isLinkExisting ? '可從下方建議候選人選擇，或自行輸入既有 Jira key；也可改為標記需建立新 Jira。' : action === 'approve' ? '核准會直接更新 OpenSearch 中的 error log。' : isUnassociated ? '此操作只會標記為 MANUAL_NEEDS_NEW_JIRA，不會建立 Jira 或 embedding。' : '拒絕會直接更新 OpenSearch 為人工拒絕，不會建立 Jira。';
         document.getElementById('modal-title').textContent = isLinkExisting ? '連結既有 Jira' : action === 'approve' ? '核准候選關聯' : isUnassociated ? '標記需建立新 Jira' : '拒絕候選關聯';
         document.getElementById('modal-eyebrow').textContent = `${items.length} 筆待審核 logs`;
-        document.getElementById('modal-review-summary').innerHTML = `<p>${isLinkExisting ? '既有 Jira：請輸入下方 Jira key' : `候選 Jira：<strong>${this.escape(candidateKeys.join(', ') || '未指定')}</strong>`}</p><p>選取 ${items.length} 筆 log。${actionText}</p>`;
+        document.getElementById('modal-review-summary').innerHTML = `<p>${isLinkExisting ? '既有 Jira：可選擇下方建議或自行輸入' : `候選 Jira：<strong>${this.escape(candidateKeys.join(', ') || '未指定')}</strong>`}</p><p>選取 ${items.length} 筆 log。${actionText}</p>`;
         document.getElementById('existing-jira-field').classList.toggle('hidden', !isLinkExisting);
         document.getElementById('existing-jira-key').value = '';
+        document.getElementById('create-new-jira-field').classList.toggle('hidden', !isLinkExisting);
+        document.getElementById('create-new-jira-checkbox').checked = false;
+        document.getElementById('knn-suggestions-field').classList.toggle('hidden', !isLinkExisting);
+        document.getElementById('knn-suggestions-list').innerHTML = '';
         document.getElementById('review-reason').value = '';
         document.getElementById('reason-hint').textContent = action === 'reject' && !isUnassociated ? '（必填）' : '（選填）';
-        document.getElementById('modal-warning').textContent = isLinkExisting ? '只會連結已存在的 Jira，不會建立新 Jira；site 與 log group 不一致時會拒絕更新。' : action === 'approve' ? '請確認候選 issue 與環境、服務及根因一致。此操作會直接修改 OpenSearch。' : isUnassociated ? '請確認這些 logs 確實需要後續建立新 Jira；目前只會標記，不會自動建單。' : '拒絕會直接寫入 MANUAL_REJECTED，不會建立新 Jira；請在備註記錄原因。';
+        document.getElementById('modal-warning').textContent = isLinkExisting ? '只會連結已存在的 Jira，不會建立新 Jira；site 與 log group 不一致時會拒絕更新。「標記需建立新 Jira」只會設定候選文件為待建立，實際建立 Jira 需要後端手動執行任務。' : action === 'approve' ? '請確認候選 issue 與環境、服務及根因一致。此操作會直接修改 OpenSearch。' : isUnassociated ? '請確認這些 logs 確實需要後續建立新 Jira；目前只會標記，不會自動建單。' : '拒絕會直接寫入 MANUAL_REJECTED，不會建立新 Jira；請在備註記錄原因。';
         document.getElementById('modal-confirm').textContent = actionButton;
         document.getElementById('review-modal').classList.remove('hidden');
+        if (isLinkExisting) this.loadKnnSuggestions(items[0]);
+    }
+
+    async loadKnnSuggestions(item) {
+        const listEl = document.getElementById('knn-suggestions-list');
+        const candidate = item.candidate || {};
+        if (candidate.key || !Array.isArray(candidate.embedding) || !candidate.embedding.length) {
+            listEl.innerHTML = '<p class="knn-suggestions-empty">此筆沒有可用於相似度搜尋的候選向量，請自行輸入 Jira key 或標記需建立新 Jira。</p>';
+            return;
+        }
+        listEl.innerHTML = '<p class="knn-suggestions-empty">正在搜尋相似的既有 Jira...</p>';
+        const suggestions = await this.findSimilarKeyedCandidates(
+            candidate.embedding, item.site, candidate.log_group || item.log_group, 3,
+        );
+        if (!this.pendingAction || document.getElementById('review-modal').classList.contains('hidden')) return;
+        if (!suggestions.length) {
+            listEl.innerHTML = '<p class="knn-suggestions-empty">找不到相似的既有 Jira，請自行輸入 Jira key 或標記需建立新 Jira。</p>';
+            return;
+        }
+        listEl.innerHTML = suggestions.map((suggestion, index) => {
+            const similarity = Number.isFinite(suggestion.score) ? `${((suggestion.score - 1) * 100).toFixed(2)}%` : '未知';
+            return `<label class="knn-suggestion"><input type="radio" name="knn-suggestion" value="${this.escape(suggestion.key)}" ${index === 0 ? '' : ''}><span class="knn-suggestion-body"><span class="knn-suggestion-title">${this.escape(suggestion.key)}</span><span class="knn-suggestion-meta">相似度 ${similarity} ｜ ${this.escape(suggestion.error_type || '')}</span><span class="knn-suggestion-summary">${this.escape(suggestion.summary || suggestion.error_message || '')}</span></span></label>`;
+        }).join('');
+        listEl.querySelectorAll('input[name="knn-suggestion"]').forEach((radio) => {
+            radio.addEventListener('change', () => {
+                document.getElementById('existing-jira-key').value = radio.value;
+                document.getElementById('create-new-jira-checkbox').checked = false;
+            });
+        });
     }
 
     closeModal() { this.pendingAction = null; document.getElementById('review-modal').classList.add('hidden'); }
@@ -779,8 +884,9 @@ class ReviewPage {
         const { action, ids } = this.pendingAction;
         const reason = document.getElementById('review-reason').value.trim();
         const existingJiraKey = document.getElementById('existing-jira-key').value.trim();
-        if (action === 'link-existing' && !existingJiraKey) {
-            this.showToast('請輸入要連結的既有 Jira key。', 'error');
+        const createNewJira = action === 'link-existing' && document.getElementById('create-new-jira-checkbox').checked;
+        if (action === 'link-existing' && !createNewJira && !existingJiraKey) {
+            this.showToast('請選擇建議候選人、自行輸入既有 Jira key，或勾選標記需建立新 Jira。', 'error');
             return;
         }
         if (action === 'reject' && !reason && document.getElementById('review-mode').value !== 'UNASSOCIATED') {
@@ -801,7 +907,7 @@ class ReviewPage {
         try {
             for (const item of records) {
                 try {
-                    await this.applyDecision(item, action, reason, existingJiraKey);
+                    await this.applyDecision(item, action, reason, existingJiraKey, createNewJira);
                     updated += 1;
                 } catch (error) {
                     failures.push(`${item.message_id || item.id}: ${error.message}`);
@@ -813,7 +919,7 @@ class ReviewPage {
                 this.showToast(`已更新 ${updated} 筆；${failures.length} 筆失敗，請查看錯誤並重新整理。`, 'error');
                 console.error('Review update failures:', failures);
             } else {
-                const actionLabel = action === 'link-existing' ? '連結既有 Jira' : action === 'approve' ? '核准' : '拒絕';
+                const actionLabel = createNewJira ? '標記需建立新 Jira' : action === 'link-existing' ? '連結既有 Jira' : action === 'approve' ? '核准' : '拒絕';
                 this.showToast(`已直接${actionLabel} ${updated} 筆 OpenSearch error log。`, 'success');
             }
         } finally {

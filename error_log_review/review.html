@@ -147,9 +147,16 @@
             </div>
             <div class="modal-body">
                 <div id="modal-review-summary"></div>
+                <div class="modal-field hidden" id="knn-suggestions-field">
+                    <span>系統建議的相似既有 Jira（依向量相似度排序，僅供參考）</span>
+                    <div id="knn-suggestions-list" class="knn-suggestions-list"></div>
+                </div>
                 <label class="modal-field hidden" id="existing-jira-field">
                     <span>既有 Jira key</span>
                     <input id="existing-jira-key" type="text" placeholder="例如 VEL-1276" autocomplete="off">
+                </label>
+                <label class="modal-field hidden" id="create-new-jira-field">
+                    <span class="checkbox-field"><input id="create-new-jira-checkbox" type="checkbox"><span>沒有合適的候選，改為標記需建立新 Jira（不會立即呼叫 Jira API，需要後端手動執行建立任務）</span></span>
                 </label>
                 <label class="modal-field" id="reason-field">
                     <span>審核備註 <small id="reason-hint">（選填）</small></span>
