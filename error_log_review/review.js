@@ -293,7 +293,14 @@ class ReviewPage {
     }
 
     async attachCandidateDetails(items) {
-        const references = [...new Set(items.map((item) => item.review_candidate_reference).filter(Boolean))];
+        // review_candidate_reference/key cover the PENDING_REVIEW queue.
+        // jira_reference covers the UNASSOCIATED queue: once a high-similarity
+        // no-key candidate is found, _mark_pending_new_jira() points the log's
+        // jira_reference straight at that candidate (no review_candidate_*
+        // fields are set in that path), so it must also be resolved here or
+        // the dashboard shows "no suggested issue" even though a candidate
+        // already exists and is waiting for a PENDING_CREATE decision.
+        const references = [...new Set(items.map((item) => item.review_candidate_reference || item.jira_reference).filter((value) => value && value !== 'null' && value !== 'None'))];
         const keys = [...new Set(items.map((item) => item.review_candidate_key).filter(Boolean))];
         if (!references.length && !keys.length) return;
         const should = [];
@@ -313,9 +320,10 @@ class ReviewPage {
         });
         const candidates = payload.hits?.hits || [];
         items.forEach((item) => {
+            const reference = item.review_candidate_reference || item.jira_reference;
             const hit = candidates.find((candidateHit) => {
                 const source = candidateHit._source || {};
-                return candidateHit._id === item.review_candidate_reference
+                return candidateHit._id === reference
                     || (item.review_candidate_key && source.key === item.review_candidate_key);
             });
             item.candidate = hit ? {
@@ -323,7 +331,7 @@ class ReviewPage {
                 ...(hit._source || {}),
             } : {
                 key: item.review_candidate_key,
-                summary: '找不到候選 Jira embedding document',
+                summary: reference ? '找不到候選 Jira embedding document' : '尚無系統候選，可自行輸入既有 Jira 或標記需建立新 Jira',
                 error_message: '',
                 error_type: '',
                 traceback: '',
