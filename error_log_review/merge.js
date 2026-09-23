@@ -43,6 +43,10 @@ class MergePage {
         document.getElementById('candidate-list').addEventListener('change', (event) => {
             if (event.target.matches('[data-candidate-checkbox]')) this.updateSubmitButtonState();
         });
+        document.getElementById('manual-add-form').addEventListener('submit', (event) => {
+            event.preventDefault();
+            this.addManualCandidate();
+        });
         document.getElementById('submit-merge-btn').addEventListener('click', () => this.openConfirmModal());
         document.getElementById('confirm-modal-close').addEventListener('click', () => this.closeConfirmModal());
         document.getElementById('confirm-modal-cancel').addEventListener('click', () => this.closeConfirmModal());
@@ -282,6 +286,72 @@ class MergePage {
         }));
     }
 
+    // --- Manual candidate addition (for candidates the kNN search didn't surface,
+    // e.g. different log_group naming for what is actually the same service) ---
+
+    async addManualCandidate() {
+        if (!this.target) {
+            this.showToast('請先搜尋目標 Jira issue。', 'error');
+            return;
+        }
+        const rawKey = document.getElementById('manual-add-key').value.trim();
+        if (!/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(rawKey)) {
+            this.showToast('請輸入有效的 Jira key，例如 VEL-1888。', 'error');
+            return;
+        }
+        if (rawKey === this.target.key) {
+            this.showToast('不能把目標 issue 自己加入候選清單。', 'error');
+            return;
+        }
+        if (this.candidates.some((c) => c.key === rawKey)) {
+            this.showToast(`${rawKey} 已經在候選清單中。`, 'error');
+            return;
+        }
+        const addBtn = document.getElementById('manual-add-btn');
+        addBtn.disabled = true;
+        try {
+            const payload = await this.openSearchRequest(`/${CANDIDATE_INDEX}/_search`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    size: 1,
+                    _source: ['key', 'summary', 'error_message', 'error_type', 'traceback', 'site', 'log_group', 'status'],
+                    query: { bool: { should: [{ term: { 'key.keyword': rawKey } }, { term: { key: rawKey } }], minimum_should_match: 1 } },
+                }),
+            });
+            const hit = payload.hits?.hits?.[0];
+            if (!hit) {
+                this.showToast(`找不到 Jira ${rawKey} 對應的 embedding document。`, 'error');
+                return;
+            }
+            const candidate = {
+                document_id: hit._id,
+                index: hit._index,
+                score: null,
+                similarity: null,
+                manuallyAdded: true,
+                ...(hit._source || {}),
+            };
+            const siteMismatch = candidate.site && this.target.site && candidate.site !== this.target.site;
+            const logGroupMismatch = candidate.log_group && this.target.log_group && candidate.log_group !== this.target.log_group;
+            if (siteMismatch || logGroupMismatch) {
+                candidate.manualMismatchWarning = [
+                    siteMismatch ? `site 不同（候選：${candidate.site}，目標：${this.target.site}）` : null,
+                    logGroupMismatch ? `log group 不同（候選：${candidate.log_group}，目標：${this.target.log_group}）` : null,
+                ].filter(Boolean).join('；');
+            }
+            await this.attachAffectedLogCounts([candidate]);
+            this.candidates = [candidate, ...this.candidates];
+            this.renderCandidateList();
+            document.getElementById('manual-add-key').value = '';
+            this.showToast(`已加入 ${rawKey}，請確認 site/log group 後再勾選。`, 'success');
+        } catch (error) {
+            console.error('Failed to add manual candidate:', error);
+            this.showToast(this.describeConnectionError(error), 'error');
+        } finally {
+            addBtn.disabled = false;
+        }
+    }
+
     // --- Rendering ---
 
     renderTargetSummary(target) {
@@ -295,7 +365,9 @@ class MergePage {
 
     renderCandidateList() {
         const listEl = document.getElementById('candidate-list');
-        document.getElementById('candidate-count').textContent = `找到 ${this.candidates.length} 筆相似候選（site + log group 與目標一致）`;
+        const manualCount = this.candidates.filter((c) => c.manuallyAdded).length;
+        const autoCount = this.candidates.length - manualCount;
+        document.getElementById('candidate-count').textContent = `找到 ${autoCount} 筆相似候選（site + log group 與目標一致）${manualCount ? `，另手動加入 ${manualCount} 筆` : ''}`;
         if (!this.candidates.length) {
             listEl.innerHTML = '<p class="empty-state">沒有找到符合條件的相似候選。</p>';
             this.updateSubmitButtonState();
@@ -303,7 +375,7 @@ class MergePage {
         }
         listEl.innerHTML = this.candidates.map((candidate, index) => {
             const hasKey = Boolean(candidate.key);
-            const similarityText = Number.isFinite(candidate.similarity) ? `${(candidate.similarity * 100).toFixed(2)}%` : '未知';
+            const similarityText = Number.isFinite(candidate.similarity) ? `${(candidate.similarity * 100).toFixed(2)}%` : '手動加入';
             const countText = candidate.affectedLogCount === null ? '（查詢失敗）' : `${candidate.affectedLogCount} 筆`;
             // Merging a keyed candidate deletes its embedding document but does NOT
             // touch the real Jira issue on Jira Cloud (this tool never calls the Jira
@@ -314,18 +386,22 @@ class MergePage {
             const keyNote = hasKey
                 ? `<span class="candidate-keyed-note">⚠ 已對應真實 Jira ${this.escape(candidate.key)}：合併只會刪除這裡的 embedding 紀錄並搬移 error log，不會呼叫 Jira API；${this.escape(candidate.key)} 在 Jira 平台上仍會保留，請合併後自行到 Jira 關閉或標記為 duplicate。</span>`
                 : '';
+            const mismatchNote = candidate.manualMismatchWarning
+                ? `<span class="candidate-mismatch-note">⚠ 手動加入的候選與目標不完全一致：${this.escape(candidate.manualMismatchWarning)}。請確認這確實是同一個根因才合併。</span>`
+                : '';
             return `
                 <label class="candidate-merge-item">
                     <input type="checkbox" data-candidate-checkbox data-index="${index}">
                     <div class="candidate-merge-body">
                         <div class="candidate-merge-top">
-                            <span class="badge badge-similarity">相似度 ${similarityText}</span>
+                            <span class="badge badge-similarity">${candidate.manuallyAdded ? '手動加入' : `相似度 ${similarityText}`}</span>
                             <span class="candidate-merge-count">影響 error log：${countText}</span>
                             ${hasKey ? `<span class="badge badge-warning">key: ${this.escape(candidate.key)}</span>` : '<span class="badge badge-muted">無 key</span>'}
                         </div>
                         <p class="candidate-merge-summary">${this.escape(candidate.summary || candidate.error_message || '未提供 summary')}</p>
                         <p class="candidate-merge-meta">doc_id：${this.escape(candidate.document_id)}</p>
                         ${keyNote}
+                        ${mismatchNote}
                     </div>
                 </label>`;
         }).join('');
@@ -414,7 +490,11 @@ class MergePage {
         }
 
         const updateResult = await this.openSearchRequest(
-            `/${this.encodeIndex(ERROR_INDEXES)}/_update_by_query?conflicts=proceed`,
+            // refresh=true forces the affected shards to refresh before this call
+            // returns, so the immediately-following verification search (and the
+            // UI's log-count refresh) see the update instead of racing OpenSearch's
+            // default ~1s refresh interval and finding stale "still referenced" hits.
+            `/${this.encodeIndex(ERROR_INDEXES)}/_update_by_query?conflicts=proceed&refresh=true`,
             {
                 method: 'POST',
                 body: JSON.stringify({

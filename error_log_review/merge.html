@@ -72,6 +72,14 @@
                 <span id="candidate-count" class="candidate-count"></span>
             </div>
             <div id="candidate-list" class="candidate-merge-list"></div>
+            <form id="manual-add-form" class="manual-add-form">
+                <label>
+                    <span>手動新增候選（Jira key）</span>
+                    <input id="manual-add-key" type="text" placeholder="例如 VEL-1888" autocomplete="off" spellcheck="false">
+                </label>
+                <button class="btn btn-ghost" id="manual-add-btn" type="submit">加入候選清單</button>
+            </form>
+            <p class="manual-add-hint">用於相似度搜尋沒有列出、但你確定要合併的候選（例如 log group 不同名但實際是同一服務）。仍會檢查 key 是否存在，並顯示影響的 log 數；不會檢查 site/log group 是否一致，請自行確認。</p>
             <div class="merge-actions">
                 <button class="btn btn-danger" id="submit-merge-btn" type="button" disabled>提交合併</button>
             </div>
