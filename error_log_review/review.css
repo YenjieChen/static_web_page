@@ -287,6 +287,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--primary); box-sh
 .candidate-merge-summary { margin: 0 0 4px; font-weight: 600; overflow-wrap: anywhere; }
 .candidate-merge-meta { margin: 0; color: var(--muted); font-size: 12px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .candidate-keyed-note { display: block; margin-top: 6px; color: var(--warning); font-size: 12px; font-weight: 600; }
+.confirm-keyed-warning { margin-top: 12px; padding: 10px; border-radius: 7px; color: #754d00; background: var(--warning-bg); font-size: 13px; font-weight: 600; }
 .badge-warning { color: var(--warning); background: var(--warning-bg); }
 .badge-muted { color: var(--muted); background: #eef1f6; }
 .merge-actions { display: flex; justify-content: flex-end; margin-top: 14px; }

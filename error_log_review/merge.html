@@ -52,7 +52,7 @@
     <main class="page-shell">
         <section class="notice" aria-label="合併說明">
             <strong>合併原則</strong>
-            <span>只能合併「尚未有 Jira key」的候選（系統自動產生、還沒變成正式 Jira 的暫存文件）。候選必須與目標 issue 的 site 及 log group 都一致才能勾選。合併後會把候選底下的 error log 全部改指向目標 issue，並刪除候選文件；此操作不會呼叫 Jira API，也不會修改 Jira 平台上的任何 issue。</span>
+            <span>候選必須與目標 issue 的 site 及 log group 都一致才會列出。合併後會把候選底下的 error log 全部改指向目標 issue，並刪除候選的 embedding 文件；此操作不會呼叫 Jira API，也不會修改 Jira 平台上的任何 issue。若候選已對應真實 Jira key，該 issue 在 Jira 平台上仍會保留（只是不再有新 log 指向它），合併後請自行到 Jira 上關閉或標記為 duplicate。</span>
         </section>
 
         <section class="target-panel" aria-label="目標 Jira Issue">

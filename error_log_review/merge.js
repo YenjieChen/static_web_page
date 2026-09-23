@@ -305,14 +305,18 @@ class MergePage {
             const hasKey = Boolean(candidate.key);
             const similarityText = Number.isFinite(candidate.similarity) ? `${(candidate.similarity * 100).toFixed(2)}%` : '未知';
             const countText = candidate.affectedLogCount === null ? '（查詢失敗）' : `${candidate.affectedLogCount} 筆`;
-            const disabledAttr = hasKey ? 'disabled' : '';
-            const disabledClass = hasKey ? 'is-disabled' : '';
+            // Merging a keyed candidate deletes its embedding document but does NOT
+            // touch the real Jira issue on Jira Cloud (this tool never calls the Jira
+            // API) — the issue itself will keep existing there with no new logs
+            // pointing at it. That cleanup on the Jira side is the reviewer's
+            // responsibility after merging; the note below exists to make that
+            // explicit rather than silently deleting a still-tracked issue's record.
             const keyNote = hasKey
-                ? `<span class="candidate-keyed-note">已對應真實 Jira ${this.escape(candidate.key)}，如需合併請先在 Jira 上手動處理，此工具不會刪除已有 key 的候選。</span>`
+                ? `<span class="candidate-keyed-note">⚠ 已對應真實 Jira ${this.escape(candidate.key)}：合併只會刪除這裡的 embedding 紀錄並搬移 error log，不會呼叫 Jira API；${this.escape(candidate.key)} 在 Jira 平台上仍會保留，請合併後自行到 Jira 關閉或標記為 duplicate。</span>`
                 : '';
             return `
-                <label class="candidate-merge-item ${disabledClass}">
-                    <input type="checkbox" data-candidate-checkbox data-index="${index}" ${disabledAttr}>
+                <label class="candidate-merge-item">
+                    <input type="checkbox" data-candidate-checkbox data-index="${index}">
                     <div class="candidate-merge-body">
                         <div class="candidate-merge-top">
                             <span class="badge badge-similarity">相似度 ${similarityText}</span>
@@ -344,12 +348,14 @@ class MergePage {
         const selected = this.getSelectedCandidates();
         if (!selected.length) return;
         const totalLogs = selected.reduce((sum, c) => sum + (c.affectedLogCount || 0), 0);
+        const keyedSelected = selected.filter((c) => c.key);
         document.getElementById('confirm-modal-body').innerHTML = `
             <p>即將把 <strong>${selected.length}</strong> 個候選合併到 <strong>${this.escape(this.target.key)}</strong>：</p>
             <ul class="confirm-candidate-list">
-                ${selected.map((c) => `<li>${this.escape(c.document_id)}（${c.affectedLogCount ?? '?'} 筆 log）</li>`).join('')}
+                ${selected.map((c) => `<li>${this.escape(c.document_id)}${c.key ? ` (${this.escape(c.key)})` : ''}（${c.affectedLogCount ?? '?'} 筆 log）</li>`).join('')}
             </ul>
-            <p>總計影響 <strong>${totalLogs}</strong> 筆 error log 的 jira_reference，並刪除上述 ${selected.length} 個候選文件。</p>`;
+            <p>總計影響 <strong>${totalLogs}</strong> 筆 error log 的 jira_reference，並刪除上述 ${selected.length} 個候選文件。</p>
+            ${keyedSelected.length ? `<p class="confirm-keyed-warning">⚠ 其中 ${keyedSelected.length} 個候選已對應真實 Jira（${keyedSelected.map((c) => this.escape(c.key)).join(', ')}）。此工具不會呼叫 Jira API，這些 issue 在 Jira 平台上仍會保留，合併後請自行到 Jira 上關閉或標記為 duplicate。</p>` : ''}`;
         document.getElementById('confirm-modal').classList.remove('hidden');
     }
 
@@ -390,11 +396,17 @@ class MergePage {
     }
 
     async mergeOneCandidate(candidate) {
-        // Re-read the candidate right before mutating it: the affected-log count and key
-        // status shown in the UI may be stale by the time the user confirms the merge.
+        if (candidate.document_id === this.target.document_id) {
+            throw new Error('候選與目標 issue 是同一個文件，已跳過。');
+        }
+        // Re-read the candidate right before mutating it: the key/index shown in the UI
+        // may be stale by the time the user confirms the merge (someone else could have
+        // changed it, or it could already have been merged in a previous run).
         const fresh = await this.rereadCandidate(candidate.document_id);
         if (!fresh) throw new Error('候選文件已不存在，可能已被其他人處理，請重新整理。');
-        if (fresh.key) throw new Error(`候選已對應真實 Jira ${fresh.key}，無法合併，請重新整理。`);
+        if ((fresh.key || null) !== (candidate.key || null)) {
+            throw new Error(`候選的 key 已變更為 ${fresh.key || '(null)'}（畫面顯示為 ${candidate.key || '(null)'}），請重新整理後再試。`);
+        }
         if (fresh.index !== candidate.index) {
             // Defensive: candidate documents are only ever created in the current
             // year's index, but guard against acting on an unexpected index anyway.
@@ -454,13 +466,15 @@ class MergePage {
         const okResults = results.filter((r) => r.ok);
         const failResults = results.filter((r) => !r.ok);
         const totalUpdated = okResults.reduce((sum, r) => sum + (r.updated || 0), 0);
+        const mergedKeys = okResults.filter((r) => r.candidate.key).map((r) => r.candidate.key);
         resultEl.innerHTML = `
             <div class="merge-result-summary">
                 <strong>合併完成</strong>
                 <p>成功合併 ${okResults.length} 個候選，共更新 ${totalUpdated} 筆 error log 並刪除對應候選文件。${failResults.length ? `${failResults.length} 個候選失敗，未刪除。` : ''}</p>
             </div>
-            ${okResults.length ? `<ul class="merge-result-list">${okResults.map((r) => `<li class="is-ok">✓ ${this.escape(r.candidate.document_id)}：更新 ${r.updated} 筆 log</li>`).join('')}</ul>` : ''}
+            ${okResults.length ? `<ul class="merge-result-list">${okResults.map((r) => `<li class="is-ok">✓ ${this.escape(r.candidate.document_id)}${r.candidate.key ? ` (${this.escape(r.candidate.key)})` : ''}：更新 ${r.updated} 筆 log</li>`).join('')}</ul>` : ''}
             ${failResults.length ? `<ul class="merge-result-list">${failResults.map((r) => `<li class="is-fail">✗ ${this.escape(r.candidate.document_id)}：${this.escape(r.error)}</li>`).join('')}</ul>` : ''}
+            ${mergedKeys.length ? `<p class="confirm-keyed-warning">⚠ 請記得到 Jira 平台手動關閉或標記以下 issue 為 duplicate：${mergedKeys.map((k) => this.escape(k)).join(', ')}（這裡的刪除只影響 OpenSearch，不會呼叫 Jira API）。</p>` : ''}
         `;
         if (failResults.length) {
             this.showToast(`${failResults.length} 個候選合併失敗，請查看結果清單。`, 'error');
