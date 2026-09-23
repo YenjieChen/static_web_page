@@ -451,11 +451,19 @@ class ReviewPage {
 
     async findSimilarKeyedCandidates(embedding, site, logGroup, limit = 3) {
         if (!Array.isArray(embedding) || !embedding.length) return [];
+        // Candidates without a key (including the source document itself,
+        // which always scores highest against its own vector) are common in
+        // the nearest neighbors and get dropped by the post-fetch filter
+        // below. Fetching only `limit` results and filtering afterwards
+        // regularly leaves 0-1 usable suggestions even when keyed matches
+        // exist further down the ranking, so fetch a much larger candidate
+        // pool (k) and only cap the *filtered* result at `limit`.
+        const candidatePoolSize = Math.max(limit * 20, 100);
         const body = {
-            size: limit,
+            size: candidatePoolSize,
             _source: ['key', 'summary', 'error_message', 'error_type', 'site', 'log_group', 'status'],
             query: {
-                knn: { embedding: { vector: embedding, k: Math.max(limit * 5, 20) } },
+                knn: { embedding: { vector: embedding, k: candidatePoolSize } },
             },
             post_filter: {
                 bool: {
@@ -693,7 +701,13 @@ class ReviewPage {
     renderGrouped(items) {
         const groups = new Map();
         items.forEach((item) => {
-            const key = item.review_candidate_key || item.review_candidate_reference || '未指定候選';
+            // UNASSOCIATED-queue items have no review_candidate_* fields (see
+            // attachCandidateDetails); group by the resolved candidate loaded
+            // from jira_reference so they don't all collapse into one
+            // "未指定候選" bucket.
+            const key = item.review_candidate_key || item.review_candidate_reference
+                || (item.candidate && (item.candidate.key || item.candidate.document_id))
+                || item.jira_reference || '未指定候選';
             if (!groups.has(key)) groups.set(key, []);
             groups.get(key).push(item);
         });
@@ -778,7 +792,7 @@ class ReviewPage {
                 <div class="card-top">
                     <div class="card-title">
                         <input class="card-check" type="checkbox" data-select-id="${this.escape(item.id)}" ${selected ? 'checked' : ''} aria-label="選取此 log">
-                        <div><h2>${this.escape(item.review_candidate_key || '未指定候選')}</h2><p>${this.escape(item.message_id || item.id || '')}</p></div>
+                        <div><h2>${this.escape(item.review_candidate_key || (item.candidate && (item.candidate.key || item.candidate.document_id)) || '未指定候選')}</h2><p>${this.escape(item.message_id || item.id || '')}</p></div>
                     </div>
                     <div><span class="badge badge-${this.escape(site)}">${this.escape(site.toUpperCase())}</span> <span class="badge badge-similarity">相似度 ${similarity}</span></div>
                 </div>
