@@ -210,7 +210,15 @@ class ReviewPage {
         const mode = document.getElementById('review-mode').value;
         if (mode === 'PENDING_REVIEW') return this.fetchPendingItems();
         const site = document.getElementById('site-filter').value;
-        const indexes = site ? `error_log_${site}_*` : ERROR_INDEXES;
+        // Dev-site error logs are intentionally excluded from automated Jira
+        // association (see update_embedding_with_error_logs in report_shared.py);
+        // dev uses a separate email-only monitoring flow instead. Without this,
+        // every dev log with no jira_reference piles up in the UNASSOCIATED
+        // queue and can never have a suggested candidate, which drowns out the
+        // handful of prod/stage logs that actually need a reviewer decision.
+        const indexes = site ? `error_log_${site}_*`
+            : mode === 'UNASSOCIATED' ? 'error_log_stage_*,error_log_prod_*'
+            : ERROR_INDEXES;
         const statusFilter = { term: { 'association_status.keyword': mode } };
         const queueQuery = mode === 'UNASSOCIATED' ? { match_all: {} } : statusFilter;
         const body = {
