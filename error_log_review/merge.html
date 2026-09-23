@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="VortexAI Jira 候選合併工具">
+    <title>合併候選 | VortexAI Error Monitoring</title>
+    <link rel="stylesheet" href="review.css">
+</head>
+<body>
+    <header class="topbar">
+        <div>
+            <p class="eyebrow">VORTEXAI ERROR MONITORING</p>
+            <h1>合併候選到既有 Jira</h1>
+            <p class="subtitle">輸入目標 Jira issue，搜尋相似的無 key 候選，勾選後一次性把 error log 導向目標 issue 並清理候選文件</p>
+        </div>
+        <div class="topbar-actions">
+            <a class="btn btn-ghost" href="review.html">回到人工 Review</a>
+        </div>
+    </header>
+
+    <section class="connection-panel" aria-label="OpenSearch 連線設定">
+        <div class="connection-heading">
+            <div>
+                <p class="eyebrow">OPTIONAL CONNECTION SETTINGS</p>
+                <h2>OpenSearch 連線設定</h2>
+            </div>
+            <span class="connection-status" id="connection-status">尚未套用設定</span>
+        </div>
+        <p class="connection-warning">帳號與密碼不會送到其他服務以外的地方。URL 與帳號會保存在此瀏覽器的 localStorage；密碼只保存在目前分頁的 sessionStorage，關閉分頁後清除。按下查詢後，瀏覽器會直接以這組 credentials 查詢 OpenSearch；請確認 OpenSearch 已允許此 GitHub Pages origin 的 CORS，且 TLS 憑證有效。</p>
+        <div class="connection-details" id="connection-details" aria-live="polite">尚未提供連線設定</div>
+        <form id="connection-form" class="connection-fields">
+            <label>
+                <span>OpenSearch URL</span>
+                <input id="opensearch-url" type="url" placeholder="https://your-opensearch-host" autocomplete="url" spellcheck="false">
+            </label>
+            <label>
+                <span>帳號</span>
+                <input id="opensearch-username" type="text" autocomplete="username" spellcheck="false">
+            </label>
+            <label>
+                <span>密碼</span>
+                <input id="opensearch-password" type="password" autocomplete="current-password">
+            </label>
+            <div class="connection-actions">
+                <button class="btn btn-primary" id="connect-btn" type="submit">套用連線設定</button>
+                <button class="btn btn-ghost" id="clear-connection-btn" type="button">清除帳密</button>
+            </div>
+        </form>
+    </section>
+
+    <main class="page-shell">
+        <section class="notice" aria-label="合併說明">
+            <strong>合併原則</strong>
+            <span>只能合併「尚未有 Jira key」的候選（系統自動產生、還沒變成正式 Jira 的暫存文件）。候選必須與目標 issue 的 site 及 log group 都一致才能勾選。合併後會把候選底下的 error log 全部改指向目標 issue，並刪除候選文件；此操作不會呼叫 Jira API，也不會修改 Jira 平台上的任何 issue。</span>
+        </section>
+
+        <section class="target-panel" aria-label="目標 Jira Issue">
+            <form id="target-form" class="target-form">
+                <label>
+                    <span>目標 Jira Issue Key</span>
+                    <input id="target-key" type="text" placeholder="例如 VEL-2148" autocomplete="off" spellcheck="false">
+                </label>
+                <button class="btn btn-primary" id="search-btn" type="submit">搜尋相似候選</button>
+            </form>
+            <div id="target-summary" class="target-summary hidden"></div>
+        </section>
+
+        <section id="candidate-section" class="candidate-section hidden" aria-label="相似候選清單">
+            <div class="candidate-section-header">
+                <h2>相似候選（最多 30 筆，依相似度排序）</h2>
+                <span id="candidate-count" class="candidate-count"></span>
+            </div>
+            <div id="candidate-list" class="candidate-merge-list"></div>
+            <div class="merge-actions">
+                <button class="btn btn-danger" id="submit-merge-btn" type="button" disabled>提交合併</button>
+            </div>
+        </section>
+
+        <section id="merge-result" class="merge-result hidden" aria-live="polite"></section>
+    </main>
+
+    <div class="modal-backdrop hidden" id="confirm-modal" role="presentation">
+        <section class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title">
+            <div class="modal-header">
+                <div>
+                    <p class="eyebrow">不可逆操作確認</p>
+                    <h2 id="confirm-modal-title">確認合併候選</h2>
+                </div>
+                <button class="icon-btn" id="confirm-modal-close" type="button" aria-label="關閉">×</button>
+            </div>
+            <div class="modal-body">
+                <div id="confirm-modal-body"></div>
+                <p class="modal-warning">此操作會直接更新 OpenSearch 中的 error log，並刪除候選 embedding 文件，無法復原。請確認勾選的候選都與目標 issue 屬於同一個根因。</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" id="confirm-modal-cancel" type="button">取消</button>
+                <button class="btn btn-danger" id="confirm-modal-confirm" type="button">確認提交合併</button>
+            </div>
+        </section>
+    </div>
+
+    <div class="toast hidden" id="toast" role="status"></div>
+    <script src="merge.js"></script>
+</body>
+</html>
