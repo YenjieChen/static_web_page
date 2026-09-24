@@ -110,6 +110,10 @@ class ReviewPage {
         document.getElementById('time-range').addEventListener('change', () => this.load());
         document.getElementById('review-mode').addEventListener('change', () => this.load());
         document.getElementById('sort-filter').addEventListener('change', () => this.render());
+        document.getElementById('manual-new-jira-notice').addEventListener('click', (event) => {
+            const block = event.target.closest('.copy-command');
+            if (block) this.copyCommandToClipboard(block);
+        });
         document.getElementById('group-candidates').addEventListener('change', () => this.render());
         document.getElementById('cluster-candidates').addEventListener('change', () => this.render());
         document.getElementById('select-all').addEventListener('change', (event) => this.toggleAll(event.target.checked));
@@ -175,6 +179,7 @@ class ReviewPage {
             return;
         }
         const mode = document.getElementById('review-mode').value;
+        document.getElementById('manual-new-jira-notice').classList.toggle('hidden', mode !== 'MANUAL_NEEDS_NEW_JIRA');
         const title = mode === 'UNASSOCIATED' ? '待標記需建立新 Jira' : mode === 'MANUAL_NEEDS_NEW_JIRA' ? '待建立新 Jira' : '待審核資料';
         this.setList(`<div class="loading-state">正在直接查詢 OpenSearch 的${title}...</div>`);
         try {
@@ -1004,6 +1009,22 @@ class ReviewPage {
     formatDate(value) { if (!value) return '—'; const date = new Date(value); return Number.isNaN(date.valueOf()) ? String(value) : date.toLocaleString('zh-TW'); }
     escape(value) { return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char])); }
     showToast(message, type = '') { const toast = document.getElementById('toast'); toast.textContent = message; toast.className = `toast ${type}`; clearTimeout(this.toastTimer); this.toastTimer = setTimeout(() => toast.classList.add('hidden'), 4500); }
+
+    async copyCommandToClipboard(block) {
+        const text = block.textContent;
+        try {
+            await navigator.clipboard.writeText(text);
+            this.showToast('指令已複製到剪貼簿。', 'success');
+        } catch (error) {
+            console.warn('Clipboard API unavailable, falling back to selection:', error);
+            const range = document.createRange();
+            range.selectNodeContents(block);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            this.showToast('無法自動複製，已改為選取文字，請自行按 Ctrl/Cmd+C。', 'error');
+        }
+    }
 }
 
 document.addEventListener('DOMContentLoaded', () => { window.reviewPage = new ReviewPage(); });

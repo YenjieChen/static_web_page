@@ -57,6 +57,28 @@
             <span>請確認環境、服務、錯誤訊息與 traceback 都屬於同一根因，再核准關聯。拒絕候選只會標記為待後續處理，不會自動建立 Jira。</span>
         </section>
 
+        <section id="manual-new-jira-notice" class="notice notice-info hidden" aria-label="待建立新 Jira 後續處理說明">
+            <strong>後續處理</strong>
+            <span>
+                這裡的 log 只是被標記為「需要新 Jira」，系統不會自動建立。請由熟悉後端環境的人員依序執行以下指令：
+                <ol>
+                    <li>
+                        建立候選（掃描標記為待建立新 Jira 的 log，去重聚類後建立 <code>PENDING_CREATE</code> 候選；預設 dry-run，不會寫入）：
+                        <pre class="copy-command" tabindex="0">cd ~/venv311/prj_error_message_processor/prj_error_message_sentinel
+set -a; . ./.env; set +a
+PYTHONPATH=src python scripts/process_manual_new_jira_requests.py --days 30</pre>
+                        確認 dry-run 結果無誤後，加上 <code>--apply --confirm</code> 才會真正寫入：
+                        <pre class="copy-command" tabindex="0">PYTHONPATH=src python scripts/process_manual_new_jira_requests.py --days 30 --apply --confirm</pre>
+                    </li>
+                    <li>
+                        建立候選後，實際呼叫 Jira API 建立 issue（把上一步標記為 <code>PENDING_CREATE</code> 的候選正式建單）：
+                        <pre class="copy-command" tabindex="0">PYTHONPATH=src python -m error_log_monitor.lambda_daily_report process-pending-jira</pre>
+                    </li>
+                </ol>
+                點擊指令區塊可整段複製。
+            </span>
+        </section>
+
         <section class="summary-grid" aria-label="待審核摘要">
             <article class="summary-card">
                 <span>待審核 logs</span>
