@@ -1,6 +1,6 @@
 /* Direct OpenSearch mode. Credentials stay in memory only and are sent to OpenSearch by the browser. */
 const ERROR_INDEXES = 'error_log_dev_*,error_log_stage_*,error_log_prod_*';
-const CANDIDATE_INDEX = 'jira_issue_embedding*';
+const CANDIDATE_INDEX = 'jira_issue_embedding_titan_v2';
 const PENDING_STATUS = 'PENDING_REVIEW';
 const CLUSTER_TOKEN_SIMILARITY = 0.45;
 const CONNECTION_STORAGE_KEYS = {
@@ -457,7 +457,7 @@ class ReviewPage {
         return { document_id: hit._id, source: hit._source || {} };
     }
 
-    async findSimilarKeyedCandidates(embedding, site, logGroup, limit = 3) {
+    async findSimilarKeyedCandidates(embedding, site, logGroup, limit = 3, excludeDocumentId = "") {
         if (!Array.isArray(embedding) || !embedding.length) return [];
         // Candidates without a key (including the source document itself,
         // which always scores highest against its own vector) are common in
@@ -492,7 +492,7 @@ class ReviewPage {
         }
         return (payload.hits?.hits || [])
             .map((hit) => ({ document_id: hit._id, score: hit._score, ...(hit._source || {}) }))
-            .filter((candidate) => candidate.key && (!logGroup || candidate.log_group === logGroup))
+            .filter((candidate) => candidate.key && candidate.document_id !== excludeDocumentId && (!logGroup || candidate.log_group === logGroup))
             .slice(0, limit);
     }
 
@@ -574,7 +574,7 @@ class ReviewPage {
         if (candidateSource.key) {
             throw new Error(`候選 embedding document 已經有 Jira key ${candidateSource.key}，不需要再標記建立新 Jira。`);
         }
-        if (candidateSource.jira_creation_status === 'PENDING_CREATE' || candidateSource.jira_creation_status === 'CREATING') {
+        if (candidateSource.jira_creation_status === 'CREATING') {
             throw new Error('此候選已標記為待建立新 Jira，請等待後端任務處理。');
         }
         await this.openSearchRequest(
@@ -876,28 +876,53 @@ class ReviewPage {
         document.getElementById('modal-warning').textContent = isLinkExisting ? '只會連結已存在的 Jira，不會建立新 Jira；site 與 log group 不一致時會拒絕更新。「標記需建立新 Jira」只會設定候選文件為待建立，實際建立 Jira 需要後端手動執行任務。' : action === 'approve' ? '請確認候選 issue 與環境、服務及根因一致。此操作會直接修改 OpenSearch。' : isUnassociated ? '請確認這些 logs 確實需要後續建立新 Jira；目前只會標記，不會自動建單。' : '拒絕會直接寫入 MANUAL_REJECTED，不會建立新 Jira；請在備註記錄原因。';
         document.getElementById('modal-confirm').textContent = actionButton;
         document.getElementById('review-modal').classList.remove('hidden');
-        if (isLinkExisting) this.loadKnnSuggestions(items[0]);
+        if (isLinkExisting) this.loadKnnSuggestions(items);
     }
 
-    async loadKnnSuggestions(item) {
+    async loadKnnSuggestions(items) {
         const listEl = document.getElementById('knn-suggestions-list');
-        const candidate = item.candidate || {};
-        if (candidate.key || !Array.isArray(candidate.embedding) || !candidate.embedding.length) {
-            listEl.innerHTML = '<p class="knn-suggestions-empty">此筆沒有可用於相似度搜尋的候選向量，請自行輸入 Jira key 或標記需建立新 Jira。</p>';
+        const records = Array.isArray(items) ? items : [items];
+        const candidateSources = new Map();
+        records.forEach((item) => {
+            const candidate = item.candidate || {};
+            if (!Array.isArray(candidate.embedding) || !candidate.embedding.length) return;
+            const sourceId = candidate.document_id || candidate.key || `${item.site}:${candidate.log_group || item.log_group}`;
+            if (!candidateSources.has(sourceId)) candidateSources.set(sourceId, { item, candidate });
+        });
+        if (!candidateSources.size) {
+            listEl.innerHTML = '<p class="knn-suggestions-empty">此 cluster 沒有可用於相似度搜尋的候選向量，請自行輸入 Jira key 或標記需建立新 Jira。</p>';
             return;
         }
-        listEl.innerHTML = '<p class="knn-suggestions-empty">正在搜尋相似的既有 Jira...</p>';
-        const suggestions = await this.findSimilarKeyedCandidates(
-            candidate.embedding, item.site, candidate.log_group || item.log_group, 3,
-        );
+        listEl.innerHTML = '<p class="knn-suggestions-empty">正在搜尋此 cluster 最接近的既有 Jira...</p>';
+        const resultSets = await Promise.all([...candidateSources.values()].map(({ item, candidate }) => (
+            this.findSimilarKeyedCandidates(
+                candidate.embedding,
+                item.site,
+                candidate.log_group || item.log_group,
+                3,
+                candidate.document_id,
+            )
+        )));
         if (!this.pendingAction || document.getElementById('review-modal').classList.contains('hidden')) return;
+
+        const byKey = new Map();
+        resultSets.flat().forEach((suggestion) => {
+            if (!suggestion.key) return;
+            const previous = byKey.get(suggestion.key);
+            if (!previous || Number(suggestion.score) > Number(previous.score)) {
+                byKey.set(suggestion.key, suggestion);
+            }
+        });
+        const suggestions = [...byKey.values()]
+            .sort((left, right) => Number(right.score) - Number(left.score))
+            .slice(0, 3);
         if (!suggestions.length) {
-            listEl.innerHTML = '<p class="knn-suggestions-empty">找不到相似的既有 Jira，請自行輸入 Jira key 或標記需建立新 Jira。</p>';
+            listEl.innerHTML = '<p class="knn-suggestions-empty">找不到此 cluster 相似的既有 Jira，請自行輸入 Jira key 或標記需建立新 Jira。</p>';
             return;
         }
-        listEl.innerHTML = suggestions.map((suggestion, index) => {
+        listEl.innerHTML = suggestions.map((suggestion) => {
             const similarity = Number.isFinite(suggestion.score) ? `${((suggestion.score - 1) * 100).toFixed(2)}%` : '未知';
-            return `<label class="knn-suggestion"><input type="radio" name="knn-suggestion" value="${this.escape(suggestion.key)}" ${index === 0 ? '' : ''}><span class="knn-suggestion-body"><span class="knn-suggestion-title">${this.escape(suggestion.key)}</span><span class="knn-suggestion-meta">相似度 ${similarity} ｜ ${this.escape(suggestion.error_type || '')}</span><span class="knn-suggestion-summary">${this.escape(suggestion.summary || suggestion.error_message || '')}</span></span></label>`;
+            return `<label class="knn-suggestion"><input type="radio" name="knn-suggestion" value="${this.escape(suggestion.key)}"><span class="knn-suggestion-body"><span class="knn-suggestion-title">${this.escape(suggestion.key)}</span><span class="knn-suggestion-meta">相似度 ${similarity} ｜ ${this.escape(suggestion.error_type || '')}</span><span class="knn-suggestion-summary">${this.escape(suggestion.summary || suggestion.error_message || '')}</span></span></label>`;
         }).join('');
         listEl.querySelectorAll('input[name="knn-suggestion"]').forEach((radio) => {
             radio.addEventListener('change', () => {
