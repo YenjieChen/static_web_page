@@ -307,31 +307,31 @@ class ReviewPage {
 
     async attachCandidateDetails(items) {
         // review_candidate_reference/key cover the PENDING_REVIEW queue.
-        // jira_reference covers the UNASSOCIATED queue: once a high-similarity
-        // no-key candidate is found, _mark_pending_new_jira() points the log's
-        // jira_reference straight at that candidate (no review_candidate_*
-        // fields are set in that path), so it must also be resolved here or
-        // the dashboard shows "no suggested issue" even though a candidate
-        // already exists and is waiting for a PENDING_CREATE decision.
+        // jira_reference covers an already-created no-key candidate in the
+        // UNASSOCIATED queue. Truly unassociated logs have neither; they still
+        // receive a placeholder so the suggestion loader can search by site
+        // and error fields instead of stopping before it starts.
         const references = [...new Set(items.map((item) => item.review_candidate_reference || item.jira_reference).filter((value) => value && value !== 'null' && value !== 'None'))];
         const keys = [...new Set(items.map((item) => item.review_candidate_key).filter(Boolean))];
-        if (!references.length && !keys.length) return;
-        const should = [];
-        if (references.length) should.push({ ids: { values: references } });
-        if (keys.length) {
-            should.push({ terms: { 'key.keyword': keys } });
-            should.push({ terms: { key: keys } });
+        const candidates = [];
+        if (references.length || keys.length) {
+            const should = [];
+            if (references.length) should.push({ ids: { values: references } });
+            if (keys.length) {
+                should.push({ terms: { 'key.keyword': keys } });
+                should.push({ terms: { key: keys } });
+            }
+            const body = {
+                size: Math.max(references.length, keys.length),
+                _source: ['key', 'summary', 'description', 'error_message', 'error_type', 'traceback', 'site', 'status', 'log_group', 'embedding'],
+                query: { bool: { should, minimum_should_match: 1 } },
+            };
+            const payload = await this.openSearchRequest(`/${CANDIDATE_INDEX}/_search`, {
+                method: 'POST',
+                body: JSON.stringify(body),
+            });
+            candidates.push(...(payload.hits?.hits || []));
         }
-        const body = {
-            size: Math.max(references.length, keys.length),
-            _source: ['key', 'summary', 'description', 'error_message', 'error_type', 'traceback', 'site', 'status', 'log_group', 'embedding'],
-            query: { bool: { should, minimum_should_match: 1 } },
-        };
-        const payload = await this.openSearchRequest(`/${CANDIDATE_INDEX}/_search`, {
-            method: 'POST',
-            body: JSON.stringify(body),
-        });
-        const candidates = payload.hits?.hits || [];
         items.forEach((item) => {
             const reference = item.review_candidate_reference || item.jira_reference;
             const hit = candidates.find((candidateHit) => {
@@ -344,10 +344,12 @@ class ReviewPage {
                 ...(hit._source || {}),
             } : {
                 key: item.review_candidate_key,
-                summary: reference ? '找不到候選 Jira embedding document' : '尚無系統候選，可自行輸入既有 Jira 或標記需建立新 Jira',
+                summary: reference ? '找不到候選 Jira embedding document' : '尚無系統候選，將搜尋同 site 最近的既有 Jira',
                 error_message: '',
                 error_type: '',
                 traceback: '',
+                site: item.site,
+                log_group: item.log_group,
             };
         });
     }
@@ -462,29 +464,49 @@ class ReviewPage {
         return { document_id: hit._id, source: hit._source || {} };
     }
 
-    async findSimilarKeyedCandidates(embedding, site, logGroup, limit = 3, excludeDocumentId = "") {
-        if (!Array.isArray(embedding) || !embedding.length) return [];
-        // Candidates without a key (including the source document itself,
-        // which always scores highest against its own vector) are common in
-        // the nearest neighbors and get dropped by the post-fetch filter
-        // below. Fetching only `limit` results and filtering afterwards
-        // regularly leaves 0-1 usable suggestions even when keyed matches
-        // exist further down the ranking, so fetch a much larger candidate
-        // pool (k) and only cap the *filtered* result at `limit`.
+    async findSimilarKeyedCandidates(embedding, site, logGroup, limit = 3, excludeDocumentId = "", textQuery = "") {
+        const hasEmbedding = Array.isArray(embedding) && embedding.length > 0;
         const candidatePoolSize = Math.max(limit * 20, 100);
-        const body = {
-            size: candidatePoolSize,
-            _source: ['key', 'summary', 'error_message', 'error_type', 'site', 'log_group', 'status'],
-            query: {
-                knn: { embedding: { vector: embedding, k: candidatePoolSize } },
-            },
-            post_filter: {
-                bool: {
-                    must: [{ term: { site } }],
-                    must_not: [{ term: { status: 'SUB ISSUES' } }],
+        const sourceFields = ['key', 'summary', 'error_message', 'error_type', 'traceback', 'site', 'log_group', 'status'];
+        let body;
+        if (hasEmbedding) {
+            body = {
+                size: candidatePoolSize,
+                _source: sourceFields,
+                query: { knn: { embedding: { vector: embedding, k: candidatePoolSize } } },
+                post_filter: {
+                    bool: {
+                        must: [{ term: { site } }],
+                        must_not: [{ term: { status: 'SUB ISSUES' } }],
+                    },
                 },
-            },
-        };
+            };
+        } else {
+            const queryText = String(textQuery || '').trim();
+            body = {
+                size: candidatePoolSize,
+                _source: sourceFields,
+                query: {
+                    bool: {
+                        filter: [
+                            { term: { site } },
+                            { bool: { must_not: [{ term: { status: 'SUB ISSUES' } }] } },
+                        ],
+                        ...(queryText ? {
+                            should: [{
+                                multi_match: {
+                                    query: queryText,
+                                    fields: ['error_message^4', 'error_type^3', 'summary^2', 'traceback', 'log_group'],
+                                    type: 'best_fields',
+                                    operator: 'or',
+                                },
+                            }],
+                            minimum_should_match: 0,
+                        } : {}),
+                    },
+                },
+            };
+        }
         let payload;
         try {
             payload = await this.openSearchRequest(`/${CANDIDATE_INDEX}/_search`, {
@@ -492,12 +514,23 @@ class ReviewPage {
                 body: JSON.stringify(body),
             });
         } catch (error) {
-            console.warn('kNN suggestion query failed:', error);
+            console.warn('Jira suggestion query failed:', error);
             return [];
         }
-        return (payload.hits?.hits || [])
-            .map((hit) => ({ document_id: hit._id, score: hit._score, ...(hit._source || {}) }))
-            .filter((candidate) => candidate.key && candidate.document_id !== excludeDocumentId && (!logGroup || candidate.log_group === logGroup))
+        const candidates = (payload.hits?.hits || [])
+            .map((hit) => ({
+                document_id: hit._id,
+                score: hit._score,
+                score_type: hasEmbedding ? 'cosine' : 'text',
+                log_group_match: !logGroup || (hit._source || {}).log_group === logGroup,
+                ...(hit._source || {}),
+            }))
+            .filter((candidate) => candidate.key && candidate.document_id !== excludeDocumentId);
+        return candidates
+            .sort((left, right) => {
+                if (left.log_group_match !== right.log_group_match) return left.log_group_match ? -1 : 1;
+                return Number(right.score || 0) - Number(left.score || 0);
+            })
             .slice(0, limit);
     }
 
@@ -890,24 +923,30 @@ class ReviewPage {
         const candidateSources = new Map();
         records.forEach((item) => {
             const candidate = item.candidate || {};
-            if (!Array.isArray(candidate.embedding) || !candidate.embedding.length) return;
-            const sourceId = candidate.document_id || candidate.key || `${item.site}:${candidate.log_group || item.log_group}`;
+            const sourceId = candidate.document_id || candidate.key || `${item.site}:${candidate.log_group || item.log_group}:${item.id}`;
             if (!candidateSources.has(sourceId)) candidateSources.set(sourceId, { item, candidate });
         });
         if (!candidateSources.size) {
-            listEl.innerHTML = '<p class="knn-suggestions-empty">此 cluster 沒有可用於相似度搜尋的候選向量，請自行輸入 Jira key 或標記需建立新 Jira。</p>';
+            listEl.innerHTML = '<p class="knn-suggestions-empty">找不到可搜尋的 log 內容，請自行輸入 Jira key。</p>';
             return;
         }
         listEl.innerHTML = '<p class="knn-suggestions-empty">正在搜尋此 cluster 最接近的既有 Jira...</p>';
-        const resultSets = await Promise.all([...candidateSources.values()].map(({ item, candidate }) => (
-            this.findSimilarKeyedCandidates(
+        const resultSets = await Promise.all([...candidateSources.values()].map(async ({ item, candidate }) => {
+            const queryText = [item.error_message, item.error_type, item.traceback, item.log_group].filter(Boolean).join(' ');
+            const suggestions = await this.findSimilarKeyedCandidates(
                 candidate.embedding,
                 item.site,
                 candidate.log_group || item.log_group,
                 3,
                 candidate.document_id,
-            )
-        )));
+                queryText,
+            );
+            if (suggestions.length || !queryText) return suggestions;
+            // A vector query can return only no-key documents. Fall back to a
+            // same-site text search so an unassociated log still gets at least
+            // one usable existing Jira when that site has keyed issues.
+            return this.findSimilarKeyedCandidates([], item.site, item.log_group, 3, '', queryText);
+        }));
         if (!this.pendingAction || document.getElementById('review-modal').classList.contains('hidden')) return;
 
         const byKey = new Map();
@@ -919,15 +958,21 @@ class ReviewPage {
             }
         });
         const suggestions = [...byKey.values()]
-            .sort((left, right) => Number(right.score) - Number(left.score))
+            .sort((left, right) => {
+                if (left.log_group_match !== right.log_group_match) return left.log_group_match ? -1 : 1;
+                return Number(right.score || 0) - Number(left.score || 0);
+            })
             .slice(0, 3);
         if (!suggestions.length) {
             listEl.innerHTML = '<p class="knn-suggestions-empty">找不到此 cluster 相似的既有 Jira，請自行輸入 Jira key 或標記需建立新 Jira。</p>';
             return;
         }
         listEl.innerHTML = suggestions.map((suggestion) => {
-            const similarity = Number.isFinite(suggestion.score) ? `${((suggestion.score - 1) * 100).toFixed(2)}%` : '未知';
-            return `<label class="knn-suggestion"><input type="radio" name="knn-suggestion" value="${this.escape(suggestion.key)}"><span class="knn-suggestion-body"><span class="knn-suggestion-title">${this.escape(suggestion.key)}</span><span class="knn-suggestion-meta">相似度 ${similarity} ｜ ${this.escape(suggestion.error_type || '')}</span><span class="knn-suggestion-summary">${this.escape(suggestion.summary || suggestion.error_message || '')}</span></span></label>`;
+            const similarity = suggestion.score_type === 'cosine' && Number.isFinite(suggestion.score)
+                ? `${((suggestion.score - 1) * 100).toFixed(2)}%`
+                : '文字搜尋候選';
+            const mismatch = suggestion.log_group_match ? '' : ' ｜ log group 不同，請人工確認';
+            return `<label class="knn-suggestion"><input type="radio" name="knn-suggestion" value="${this.escape(suggestion.key)}"><span class="knn-suggestion-body"><span class="knn-suggestion-title">${this.escape(suggestion.key)}</span><span class="knn-suggestion-meta">${similarity}${mismatch} ｜ ${this.escape(suggestion.error_type || '')}</span><span class="knn-suggestion-summary">${this.escape(suggestion.summary || suggestion.error_message || '')}</span></span></label>`;
         }).join('');
         listEl.querySelectorAll('input[name="knn-suggestion"]').forEach((radio) => {
             radio.addEventListener('change', () => {
