@@ -80,6 +80,7 @@ class ReviewPage {
             const toggle = event.target.closest('.cluster-toggle');
             const approveButton = event.target.closest('.approve-btn, .needs-jira-btn, .link-existing-btn, .cluster-approve-btn, .cluster-needs-jira-btn, .cluster-link-existing-btn');
             const rejectButton = event.target.closest('.reject-btn, .cluster-reject-btn');
+            const deleteButton = event.target.closest('.delete-btn');
             if (toggle) {
                 const target = document.getElementById(toggle.dataset.target);
                 const cluster = this.clusterGroups.get(toggle.dataset.clusterId);
@@ -103,6 +104,9 @@ class ReviewPage {
                 const cluster = rejectButton.dataset.clusterId ? this.clusterGroups.get(rejectButton.dataset.clusterId) : null;
                 const action = rejectButton.dataset.reviewAction || 'reject';
                 this.openAction(action, cluster ? cluster.map((item) => item.id) : rejectButton.dataset.actionId);
+            }
+            if (deleteButton) {
+                this.openDeleteConfirmation(deleteButton.dataset.actionId);
             }
         });
         document.getElementById('search-input').addEventListener('input', () => this.render());
@@ -225,7 +229,18 @@ class ReviewPage {
             : mode === 'UNASSOCIATED' ? 'error_log_stage_*,error_log_prod_*'
             : ERROR_INDEXES;
         const statusFilter = { term: { 'association_status.keyword': mode } };
-        const queueQuery = mode === 'UNASSOCIATED' ? { match_all: {} } : statusFilter;
+        const unassociatedQuery = {
+            bool: {
+                must_not: [
+                    {
+                        terms: {
+                            'association_status.keyword': ['MANUAL_NEEDS_NEW_JIRA', 'CREATE_NEW'],
+                        },
+                    },
+                ],
+            },
+        };
+        const queueQuery = mode === 'UNASSOCIATED' ? unassociatedQuery : statusFilter;
         const body = {
             size: 10000,
             sort: [{ timestamp: { order: 'desc' } }],
@@ -624,6 +639,35 @@ class ReviewPage {
         );
     }
 
+    async deleteLog(item, current) {
+        this.assertErrorIndex(item.index_name);
+        const version = current.seqNo !== undefined && current.primaryTerm !== undefined
+            ? `?if_seq_no=${encodeURIComponent(current.seqNo)}&if_primary_term=${encodeURIComponent(current.primaryTerm)}` : '';
+        return this.openSearchRequest(
+            `/${this.encodeIndex(item.index_name)}/_doc/${this.encodeId(item.document_id || item.id)}${version}`,
+            { method: 'DELETE' },
+        );
+    }
+
+    openDeleteConfirmation(id) {
+        if (document.getElementById('review-mode').value === 'MANUAL_NEEDS_NEW_JIRA') return;
+        const item = this.items.find((record) => record.id === id);
+        if (!item) return;
+        this.pendingAction = { action: 'delete', ids: [id] };
+        document.getElementById('modal-eyebrow').textContent = '刪除 error log';
+        document.getElementById('modal-title').textContent = '確認刪除 error log';
+        document.getElementById('modal-review-summary').innerHTML = `<p>即將永久刪除：</p><p><strong>${this.escape(item.message_id || item.id)}</strong></p><p>${this.escape(item.error_message || '未提供 error message')}</p>`;
+        document.getElementById('existing-jira-field').classList.add('hidden');
+        document.getElementById('create-new-jira-field').classList.add('hidden');
+        document.getElementById('knn-suggestions-field').classList.add('hidden');
+        document.getElementById('review-reason').value = '';
+        document.getElementById('reason-hint').textContent = '（選填）';
+        document.getElementById('modal-warning').textContent = '此操作會從 OpenSearch 永久刪除 error log，無法復原；不會刪除 Jira issue 或 embedding candidate。';
+        document.getElementById('modal-confirm').textContent = '永久刪除';
+        document.getElementById('modal-confirm').className = 'btn btn-danger is-solid';
+        document.getElementById('review-modal').classList.remove('hidden');
+    }
+
     async applyDecision(item, action, reason, existingJiraKey = '', createNewJira = false) {
         const mode = document.getElementById('review-mode').value;
         const current = await this.getCurrentLog(item);
@@ -828,11 +872,14 @@ class ReviewPage {
         const selected = this.selected.has(item.id);
         const site = (item.site || 'unknown').toLowerCase();
         const similarity = Number.isFinite(Number(item.review_similarity)) ? `${(Number(item.review_similarity) * 100).toFixed(2)}%` : '未提供';
+        const deleteButton = mode === 'UNASSOCIATED' || mode === 'PENDING_REVIEW'
+            ? `<button class="btn btn-danger delete-btn" type="button" data-action-id="${this.escape(item.id)}">刪除此 error log</button>`
+            : '';
         const actionMarkup = isNewJiraQueue
             ? '<span class="queue-state">已標記待建立新 Jira</span>'
             : isUnassociated
-                ? `<button class="btn btn-primary link-existing-btn" type="button" data-review-action="link-existing" data-action-id="${this.escape(item.id)}">連結既有 Jira</button><button class="btn btn-warning needs-jira-btn" type="button" data-review-action="mark-new-jira" data-action-id="${this.escape(item.id)}">標記需建立新 Jira</button>`
-                : `<button class="btn btn-danger reject-btn" type="button" data-review-action="reject" data-action-id="${this.escape(item.id)}">拒絕候選</button><button class="btn btn-success approve-btn" type="button" data-review-action="approve" data-action-id="${this.escape(item.id)}">核准關聯</button>`;
+                ? `${deleteButton}<button class="btn btn-primary link-existing-btn" type="button" data-review-action="link-existing" data-action-id="${this.escape(item.id)}">連結既有 Jira</button><button class="btn btn-warning needs-jira-btn" type="button" data-review-action="mark-new-jira" data-action-id="${this.escape(item.id)}">標記需建立新 Jira</button>`
+                : `${deleteButton}<button class="btn btn-danger reject-btn" type="button" data-review-action="reject" data-action-id="${this.escape(item.id)}">拒絕候選</button><button class="btn btn-success approve-btn" type="button" data-review-action="approve" data-action-id="${this.escape(item.id)}">核准關聯</button>`;
         return `
             <article class="review-card ${selected ? 'is-selected' : ''}" data-id="${this.escape(item.id)}">
                 <div class="card-top">
@@ -982,7 +1029,12 @@ class ReviewPage {
         });
     }
 
-    closeModal() { this.pendingAction = null; document.getElementById('review-modal').classList.add('hidden'); }
+    closeModal() {
+        this.pendingAction = null;
+        document.getElementById('review-modal').classList.add('hidden');
+        document.getElementById('modal-confirm').className = 'btn btn-primary';
+        document.getElementById('modal-confirm').textContent = '確認';
+    }
 
     async confirmAction() {
         if (!this.pendingAction) return;
@@ -990,6 +1042,44 @@ class ReviewPage {
         const reason = document.getElementById('review-reason').value.trim();
         const existingJiraKey = document.getElementById('existing-jira-key').value.trim();
         const createNewJira = action === 'link-existing' && document.getElementById('create-new-jira-checkbox').checked;
+        if (action === 'delete') {
+            if (document.getElementById('review-mode').value === 'MANUAL_NEEDS_NEW_JIRA') {
+                this.closeModal();
+                return;
+            }
+            const records = ids.map((id) => this.items.find((item) => item.id === id)).filter(Boolean);
+            const button = document.getElementById('modal-confirm');
+            button.disabled = true;
+            let deleted = 0;
+            const failures = [];
+            try {
+                if (this.demoMode) {
+                    this.items = this.items.filter((item) => !ids.includes(item.id));
+                    deleted = records.length;
+                } else {
+                    for (const item of records) {
+                        try {
+                            const current = await this.getCurrentLog(item);
+                            await this.deleteLog(item, current);
+                            deleted += 1;
+                        } catch (error) {
+                            failures.push(`${item.message_id || item.id}: ${error.message}`);
+                        }
+                    }
+                }
+                this.closeModal();
+                if (!this.demoMode) await this.load(); else { this.render(); this.updateSummary(); }
+                if (failures.length) {
+                    this.showToast(`已刪除 ${deleted} 筆；${failures.length} 筆失敗，請重新整理。`, 'error');
+                    console.error('Error-log deletion failures:', failures);
+                } else {
+                    this.showToast(`已永久刪除 ${deleted} 筆 error log。`, 'success');
+                }
+            } finally {
+                button.disabled = false;
+            }
+            return;
+        }
         if (action === 'link-existing' && !createNewJira && !existingJiraKey) {
             this.showToast('請選擇建議候選人、自行輸入既有 Jira key，或勾選標記需建立新 Jira。', 'error');
             return;
