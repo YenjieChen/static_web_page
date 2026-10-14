@@ -10,7 +10,7 @@
  *      target issue's document id, then delete the now-orphaned candidate document.
  * No Jira Cloud API call is made anywhere in this flow.
  */
-const CANDIDATE_INDEX = 'jira_issue_embedding*';
+const CANDIDATE_INDEX = 'jira_issue_embedding_titan_v2';
 const ERROR_INDEXES = 'error_log_dev_*,error_log_stage_*,error_log_prod_*';
 const CONNECTION_STORAGE_KEYS = {
     url: 'errorLogReview.opensearchUrl',
@@ -217,7 +217,7 @@ class MergePage {
         const payload = await this.openSearchRequest(`/${CANDIDATE_INDEX}/_search`, {
             method: 'POST',
             body: JSON.stringify({
-                size: 1,
+                size: 50,
                 _source: ['key', 'summary', 'error_message', 'error_type', 'site', 'log_group', 'status', 'embedding'],
                 query: {
                     bool: {
@@ -227,8 +227,9 @@ class MergePage {
                 },
             }),
         });
-        const hit = payload.hits?.hits?.[0];
-        if (!hit) throw new Error(`找不到 Jira ${key} 對應的 embedding document。`);
+        const hits = payload.hits?.hits || [];
+        const hit = hits.length === 1 ? hits[0] : null;
+        if (!hit) throw new Error(`找不到唯一 Jira ${key} 對應的 embedding document。`);
         const source = hit._source || {};
         if (!Array.isArray(source.embedding) || !source.embedding.length) {
             throw new Error(`Jira ${key} 對應的 embedding document 沒有向量資料，無法搜尋相似候選。`);
@@ -236,7 +237,7 @@ class MergePage {
         if (!source.site || !source.log_group) {
             throw new Error(`Jira ${key} 對應的 embedding document 缺少 site 或 log group，無法安全限定合併範圍。`);
         }
-        return { document_id: hit._id, index: hit._index, ...source };
+        return { ...source, document_id: hit._id, index: hit._index };
     }
 
     async fetchSimilarCandidates(target) {
@@ -259,11 +260,11 @@ class MergePage {
         return hits
             .filter((hit) => hit._id !== target.document_id)
             .map((hit) => ({
-                document_id: hit._id,
-                index: hit._index,
                 score: hit._score,
                 similarity: Number.isFinite(hit._score) ? hit._score - 1 : null,
                 ...(hit._source || {}),
+                document_id: hit._id,
+                index: hit._index,
             }))
             .slice(0, SUGGESTION_LIMIT);
     }
@@ -324,12 +325,12 @@ class MergePage {
                 return;
             }
             const candidate = {
-                document_id: hit._id,
-                index: hit._index,
                 score: null,
                 similarity: null,
                 manuallyAdded: true,
                 ...(hit._source || {}),
+                document_id: hit._id,
+                index: hit._index,
             };
             const siteMismatch = candidate.site && this.target.site && candidate.site !== this.target.site;
             const logGroupMismatch = candidate.log_group && this.target.log_group && candidate.log_group !== this.target.log_group;

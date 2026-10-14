@@ -355,8 +355,9 @@ class ReviewPage {
                     || (item.review_candidate_key && source.key === item.review_candidate_key);
             });
             item.candidate = hit ? {
-                document_id: hit._id,
                 ...(hit._source || {}),
+                document_id: hit._id,
+                index: hit._index,
             } : {
                 key: item.review_candidate_key,
                 summary: reference ? '找不到候選 Jira embedding document' : '尚無系統候選，將搜尋同 site 最近的既有 Jira',
@@ -460,7 +461,7 @@ class ReviewPage {
         return { source: payload._source || {}, seqNo: payload._seq_no, primaryTerm: payload._primary_term };
     }
 
-    async assertCandidateExists(candidateReference, candidateKey) {
+    async assertCandidateExists(candidateReference, candidateKey, expectedSource) {
         if (!candidateReference && !candidateKey) throw new Error('此項目沒有候選 embedding reference 或 Jira key，不能核准。');
         const should = [];
         if (candidateReference) should.push({ ids: { values: [candidateReference] } });
@@ -469,13 +470,18 @@ class ReviewPage {
             should.push({ term: { key: candidateKey } });
         }
         const body = {
-            size: 1,
-            _source: ['key', 'summary', 'error_message', 'error_type', 'traceback', 'description', 'site', 'status'],
-            query: { bool: { should, minimum_should_match: 1 } },
+            size: 50,
+            _source: ['key', 'summary', 'error_message', 'error_type', 'traceback', 'description', 'site', 'log_group', 'status'],
+            query: { bool: { should, minimum_should_match: 1, filter: [{ exists: { field: 'embedding' } }, { term: { site: expectedSource?.site || '__missing_site__' } }, { term: { log_group: expectedSource?.log_group || '__missing_log_group__' } }] } },
         };
         const payload = await this.openSearchRequest(`/${CANDIDATE_INDEX}/_search`, { method: 'POST', body: JSON.stringify(body) });
-        const hit = payload.hits?.hits?.[0];
-        if (!hit?._id) throw new Error('找不到候選 Jira embedding document，不能核准。');
+        const matches = (payload.hits?.hits || []).filter(hit =>
+            expectedSource?.site && expectedSource?.log_group
+            && hit._source?.site === expectedSource.site
+            && hit._source?.log_group === expectedSource.log_group);
+        const exact = matches.find(hit => hit._id === candidateReference);
+        const hit = exact || (matches.length === 1 ? matches[0] : null);
+        if (!hit?._id) throw new Error('找不到唯一且 site/log group 相符的候選 embedding document，不能核准。');
         return { document_id: hit._id, source: hit._source || {} };
     }
 
@@ -534,11 +540,12 @@ class ReviewPage {
         }
         const candidates = (payload.hits?.hits || [])
             .map((hit) => ({
-                document_id: hit._id,
                 score: hit._score,
                 score_type: hasEmbedding ? 'cosine' : 'text',
                 log_group_match: !logGroup || (hit._source || {}).log_group === logGroup,
                 ...(hit._source || {}),
+                document_id: hit._id,
+                index: hit._index,
             }))
             .filter((candidate) => candidate.key && candidate.document_id !== excludeDocumentId);
         return candidates
@@ -564,6 +571,7 @@ class ReviewPage {
                         { term: { key: normalizedKey } },
                     ],
                     minimum_should_match: 1,
+                    filter: [{ exists: { field: 'embedding' } }],
                 },
             },
         };
@@ -576,15 +584,16 @@ class ReviewPage {
         if (!expectedSite || !expectedLogGroup) {
             throw new Error('原始 error log 缺少 site 或 log group，無法安全驗證既有 Jira。');
         }
-        const hit = (payload.hits?.hits || []).find((candidateHit) => {
+        const matches = (payload.hits?.hits || []).filter((candidateHit) => {
             const candidate = candidateHit._source || {};
             return candidateHit._id
                 && candidate.key === normalizedKey
                 && candidate.site === expectedSite
                 && candidate.log_group === expectedLogGroup;
         });
+        const hit = matches.length === 1 ? matches[0] : null;
         if (!hit) {
-            throw new Error(`找不到 Jira ${normalizedKey} 對應的 embedding document，或 site/log group 不一致。`);
+            throw new Error(`找不到唯一 Jira ${normalizedKey} 對應的 embedding document，或 site/log group 不一致。`);
         }
         return { document_id: hit._id, source: hit._source || {} };
     }
@@ -717,6 +726,7 @@ class ReviewPage {
             const candidate = await this.assertCandidateExists(
                 source.review_candidate_reference,
                 source.review_candidate_key || item.review_candidate_key,
+                source,
             );
             await this.updateLog(item, {
                 // jira_reference is the OpenSearch embedding document _id,
