@@ -131,6 +131,36 @@
     </div>
 
     <div class="toast hidden" id="toast" role="status"></div>
-    <script type="module" src="merge.js"></script>
+    <script>
+        (() => {
+            const report = (message) => {
+                const status = document.getElementById('connection-status');
+                const details = document.getElementById('connection-details');
+                if (status) {
+                    status.textContent = '頁面初始化失敗';
+                    status.className = 'connection-status is-error';
+                }
+                if (details) {
+                    details.textContent = `Merge page：${message}`;
+                }
+            };
+            window.reportMergeStartupError = report;
+            window.addEventListener('error', (event) => {
+                if (event.filename && event.filename.includes('merge.js')) {
+                    report(`無法載入或執行 merge.js：${event.message || '未知 JavaScript 錯誤'}`);
+                }
+            });
+            window.addEventListener('unhandledrejection', (event) => {
+                const reason = event.reason?.message || String(event.reason || '未知 Promise 錯誤');
+                report(`未處理的錯誤：${reason}`);
+            });
+            window.setTimeout(() => {
+                if (!window.mergePageInitialized) {
+                    report('merge.js 尚未完成初始化；請檢查瀏覽器 Console、CSP 或重新整理頁面。');
+                }
+            }, 2000);
+        })();
+    </script>
+    <script defer src="merge.js?v=20261016-1"></script>
 </body>
 </html>

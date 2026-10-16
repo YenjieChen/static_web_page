@@ -502,4 +502,13 @@ class MergePage {
     }
 }
 
-document.addEventListener('DOMContentLoaded', () => new MergePage());
+document.addEventListener('DOMContentLoaded', () => {
+    try {
+        window.mergePage = new MergePage();
+        window.mergePageInitialized = true;
+    } catch (error) {
+        const message = error?.message || '未知初始化錯誤';
+        if (window.reportMergeStartupError) window.reportMergeStartupError(`初始化失敗：${message}`);
+        else console.error('Merge page initialization failed:', error);
+    }
+});
