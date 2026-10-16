@@ -88,10 +88,22 @@ The page performs the same status and candidate consistency checks, then writes:
 
 It does not create a Jira issue or embedding.
 
-## Important limitations
+## Post-create Jira merge（純前端可選功能）
 
-- This is direct browser-to-OpenSearch access, not a security boundary. A reviewer can inspect or modify requests in browser developer tools.
-- OpenSearch credentials are not stored persistently, but they are necessarily present in browser memory while the page is open.
-- There is no trusted server-side reviewer identity or centralized audit trail in this static-only design.
-- The frontend cannot bypass CORS, TLS, network, or OpenSearch permission errors.
-- `?demo=1` bypasses OpenSearch and uses built-in sample records; demo decisions never write data.
+`merge.html` / `merge.js` 可選擇由 reviewer 在目前瀏覽器輸入 Jira URL、帳號與 API token，直接呼叫 Jira REST API。Jira credentials 僅保存在 JavaScript memory，不會寫入 `localStorage`、`sessionStorage`、Cookie、URL、console 或結果頁面；重新整理或關閉分頁後消失。
+
+使用方式：
+
+1. 輸入並套用 OpenSearch credentials。
+2. 在 Jira 連線設定輸入 HTTPS Jira URL、Jira email/帳號與 API token。
+3. 查詢 target Jira、選取候選，並填寫合併理由。
+4. 有 Jira key 的候選在提交時會先驗證 target/source issue，再更新 OpenSearch error-log reference，呼叫 `DELETE /rest/api/3/issue/{sourceKey}`，確認 source 不存在後才刪除 source embedding。
+5. 沒有 Jira key 的候選不呼叫 Jira API，只執行原本的 OpenSearch merge。
+
+安全與限制：
+
+- 這是 browser direct API，token 在操作期間可被該瀏覽器的 DevTools、extension 或惡意頁面程式看到；請使用權限受限、可撤銷的 Jira token，不要使用 administrator token。
+- Jira endpoint 必須允許 `https://yenjiechen.github.io` 的 CORS，且允許 `GET`、`DELETE` 與 `Authorization` request header；否則純前端流程會因瀏覽器 CORS 而失敗。
+- target issue 永遠不會被刪除；source 與 target 相同時拒絕。
+- Jira delete 未成功或無法驗證時，不會刪除 source embedding，但 OpenSearch error-log reference 可能已經更新；畫面會標示該候選失敗，需人工 reconciliation。
+- 這個功能不會將 Jira token 傳到 OpenSearch，也不會把 token 寫入 audit/result。

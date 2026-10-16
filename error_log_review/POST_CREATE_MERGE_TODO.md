@@ -20,7 +20,14 @@ AI 判定需要建立 Jira 後，Jira 可以直接建立，不需要人工 appro
 - [ ] request 必須攜帶 source/target embedding 與所有 affected error-log 的 `_seq_no` / `_primary_term` snapshot。
 - [ ] 禁止把 Jira project id/key 從 browser request 傳入覆寫受控設定；Jira project 由 backend configuration 決定。
 
-### 2. 建立受信任的 backend merge endpoint
+## 已完成的純前端範圍
+
+- [x] 純前端 Jira credentials 輸入與 memory-only lifecycle。
+- [x] keyed source Jira 先驗證、DELETE、再驗證不存在。
+- [x] Jira deletion failure 時保留 source embedding 並在 UI 顯示 partial failure。
+- [ ] 若需要可信 reviewer identity、集中 audit、CAS rollback 或 reconciliation，仍需改成 backend merge endpoint。
+
+## 仍需 backend 才能提供的能力
 
 - [ ] 不讓 browser 直接執行完整 merge mutation；由 backend 驗證 reviewer identity、權限與 request fingerprint。
 - [ ] 先 dry-run/read-back，再以 CAS 更新所有 affected error logs。

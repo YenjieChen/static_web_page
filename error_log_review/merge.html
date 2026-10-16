@@ -12,7 +12,7 @@
         <div>
             <p class="eyebrow">VORTEXAI ERROR MONITORING</p>
             <h1>合併候選到既有 Jira</h1>
-            <p class="subtitle">輸入目標 Jira issue，搜尋相似的無 key 候選，勾選後一次性把 error log 導向目標 issue 並清理候選文件</p>
+            <p class="subtitle">輸入目標 Jira issue，搜尋相似候選，勾選後一次性把 error log 導向目標 issue 並清理候選文件；有 Jira key 的候選可選擇同步刪除 source issue</p>
         </div>
         <div class="topbar-actions">
             <a class="btn btn-ghost" href="review.html">回到人工 Review</a>
@@ -52,7 +52,44 @@
     <main class="page-shell">
         <section class="notice" aria-label="合併說明">
             <strong>合併原則</strong>
-            <span>候選必須與目標 issue 的 site 及 log group 都一致才會列出。合併後會把候選底下的 error log 全部改指向目標 issue，並刪除候選的 embedding 文件；此操作不會呼叫 Jira API，也不會修改 Jira 平台上的任何 issue。若候選已對應真實 Jira key，該 issue 在 Jira 平台上仍會保留（只是不再有新 log 指向它），合併後請自行到 Jira 上關閉或標記為 duplicate。</span>
+            <span>候選必須與目標 issue 的 site 及 log group 都一致才會列出。合併會把候選底下的 error log 全部改指向目標 issue，並清理候選 embedding 文件。對已經有 Jira key 的候選，若已設定 Jira credentials，系統也會直接刪除該 source Jira issue；目標 issue 永遠不會被刪除。Jira token 只存在本頁記憶體，不會保存到 localStorage、sessionStorage、Cookie 或 URL。</span>
+        </section>
+
+        <section class="connection-panel" aria-label="Jira 連線設定">
+            <div class="connection-heading">
+                <div>
+                    <p class="eyebrow">OPTIONAL JIRA DELETE SETTINGS</p>
+                    <h2>Jira 連線設定</h2>
+                </div>
+                <span class="connection-status" id="jira-connection-status">未設定</span>
+            </div>
+            <p class="connection-warning">Jira URL、帳號與 API token 只會保存在目前頁面的 JavaScript 記憶體，重新整理或關閉分頁後消失，不會寫入瀏覽器儲存區。瀏覽器直連 Jira 需要 Jira endpoint 允許此 GitHub Pages origin 的 CORS；若 CORS、權限或 TLS 失敗，系統會保留 OpenSearch 的部分結果並明確顯示，不會假裝刪除成功。</p>
+            <div class="connection-details" id="jira-connection-details" aria-live="polite">尚未提供 Jira credentials；沒有 Jira key 的候選不需要此設定。</div>
+            <form id="jira-connection-form" class="connection-fields">
+                <label>
+                    <span>Jira URL</span>
+                    <input id="jira-url" type="url" placeholder="https://your-company.atlassian.net" autocomplete="url" spellcheck="false">
+                </label>
+                <label>
+                    <span>Jira 帳號 / Email</span>
+                    <input id="jira-username" type="text" autocomplete="username" spellcheck="false">
+                </label>
+                <label>
+                    <span>Jira API token</span>
+                    <input id="jira-api-token" type="password" autocomplete="off" spellcheck="false">
+                </label>
+                <div class="connection-actions">
+                    <button class="btn btn-primary" id="jira-connect-btn" type="submit">套用 Jira 設定</button>
+                    <button class="btn btn-ghost" id="jira-clear-btn" type="button">清除 Jira credentials</button>
+                </div>
+            </form>
+        </section>
+
+        <section class="target-panel" aria-label="合併理由">
+            <label>
+                <span>合併理由（刪除 Jira source issue 必填）</span>
+                <textarea id="merge-reason" rows="3" maxlength="1000" placeholder="例如：VEL-1888 與 VEL-2148 為同一根因，保留 VEL-2148 作為主 issue。"></textarea>
+            </label>
         </section>
 
         <section class="target-panel" aria-label="目標 Jira Issue">

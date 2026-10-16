@@ -1,14 +1,15 @@
-/* Direct OpenSearch mode. Credentials stay in memory only and are sent to OpenSearch by the browser.
+/* Direct browser mode. OpenSearch credentials follow the existing page behavior. Jira credentials are
+ * deliberately memory-only and are used only for explicit deletion of keyed source issues.
  *
- * Merges no-key Jira embedding candidates into a user-specified target Jira issue:
- *   1. Look up the target issue by key.
- *   2. kNN-search the 30 most similar candidates (restricted to the same site + log_group).
- *   3. Only candidates with no key can be selected (a keyed candidate is a real, already
- *      tracked Jira issue; merging it here would silently drop it from future kNN lookups
- *      without touching Jira itself, which is a much bigger, separate decision).
- *   4. On submit: for every selected candidate, repoint all error logs referencing it to the
- *      target issue's document id, then delete the now-orphaned candidate document.
- * No Jira Cloud API call is made anywhere in this flow.
+ * Merge flow:
+ *   1. Look up the target embedding document.
+ *   2. Search similar candidates in the same site + log_group.
+ *   3. Re-read each candidate immediately before mutation.
+ *   4. For keyed candidates, verify source and target Jira issues, then move OpenSearch references,
+ *      delete the source Jira issue, verify it is absent, and finally delete the source embedding.
+ *   5. For no-key candidates, move references and delete only the orphan embedding.
+ *
+ * Jira token is never written to localStorage/sessionStorage, URL, console, or result markup.
  */
 const CANDIDATE_INDEX = 'jira_issue_embedding_titan_v2';
 const ERROR_INDEXES = 'error_log_dev_*,error_log_stage_*,error_log_prod_*';
@@ -19,10 +20,12 @@ const CONNECTION_STORAGE_KEYS = {
 };
 const CANDIDATE_POOL_SIZE = 100;
 const SUGGESTION_LIMIT = 30;
+const JIRA_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
 
 class MergePage {
     constructor() {
         this.connection = null;
+        this.jiraConnection = null;
         this.target = null;
         this.candidates = [];
         this.pendingSubmit = null;
@@ -36,6 +39,11 @@ class MergePage {
             this.applyConnectionSettings();
         });
         document.getElementById('clear-connection-btn').addEventListener('click', () => this.clearConnectionSettings());
+        document.getElementById('jira-connection-form').addEventListener('submit', (event) => {
+            event.preventDefault();
+            this.applyJiraConnectionSettings();
+        });
+        document.getElementById('jira-clear-btn').addEventListener('click', () => this.clearJiraConnectionSettings());
         document.getElementById('target-form').addEventListener('submit', (event) => {
             event.preventDefault();
             this.searchSimilarCandidates();
@@ -128,7 +136,45 @@ class MergePage {
         document.getElementById('connection-status').className = 'connection-status';
         document.getElementById('connection-details').textContent = '尚未提供連線設定';
         this.resetSearchState();
-        this.showToast('本頁記憶體中的連線設定已清除。', 'success');
+        this.showToast('本頁記憶體中的 OpenSearch 連線設定已清除。', 'success');
+    }
+
+    async applyJiraConnectionSettings() {
+        const url = document.getElementById('jira-url').value.trim().replace(/\/$/, '');
+        const username = document.getElementById('jira-username').value.trim();
+        const token = document.getElementById('jira-api-token').value;
+        let parsed;
+        try {
+            parsed = new URL(url);
+            if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) {
+                throw new Error('invalid endpoint');
+            }
+        } catch {
+            this.showToast('請輸入不含帳密、查詢參數或 hash 的 HTTPS Jira URL。', 'error');
+            return;
+        }
+        if (!username || !token) {
+            this.showToast('Jira 直接刪除需要帳號與 API token。', 'error');
+            return;
+        }
+        this.jiraConnection = { url, username, authorization: `Basic ${this.toBasicAuth(username, token)}` };
+        // Clear the token input immediately. The encoded authorization remains only in memory.
+        document.getElementById('jira-api-token').value = '';
+        document.getElementById('jira-connection-status').textContent = '已套用（記憶體）';
+        document.getElementById('jira-connection-status').className = 'connection-status is-success';
+        document.getElementById('jira-connection-details').textContent = `Host：${parsed.host}｜帳號：已輸入｜API token：只存在本頁記憶體，不會保存`;
+        this.showToast('Jira 設定已套用；尚未執行任何刪除。', 'success');
+    }
+
+    clearJiraConnectionSettings() {
+        this.jiraConnection = null;
+        document.getElementById('jira-url').value = '';
+        document.getElementById('jira-username').value = '';
+        document.getElementById('jira-api-token').value = '';
+        document.getElementById('jira-connection-status').textContent = '未設定';
+        document.getElementById('jira-connection-status').className = 'connection-status';
+        document.getElementById('jira-connection-details').textContent = '尚未提供 Jira credentials；沒有 Jira key 的候選不需要此設定。';
+        this.showToast('Jira credentials 已從本頁記憶體清除。', 'success');
     }
 
     setConnectedState(message, type = '') {
@@ -168,6 +214,51 @@ class MergePage {
             throw new Error(`OpenSearch ${response.status}: ${reason}`);
         }
         return payload;
+    }
+
+    async openJiraRequest(path, options = {}) {
+        if (!this.jiraConnection) throw new Error('尚未設定 Jira credentials；請先套用 Jira 設定。');
+        const headers = {
+            Accept: 'application/json',
+            Authorization: this.jiraConnection.authorization,
+        };
+        if (options.body) headers['Content-Type'] = 'application/json';
+        let response;
+        try {
+            response = await fetch(`${this.jiraConnection.url}${path}`, { ...options, headers, credentials: 'omit' });
+        } catch (error) {
+            throw new Error(`無法連線 Jira。請檢查 Jira CORS、TLS 與網路設定（${error.message}）。`);
+        }
+        const text = await response.text();
+        let payload = {};
+        try { payload = text ? JSON.parse(text) : {}; } catch { payload = {}; }
+        if (!response.ok) {
+            const reason = payload.errorMessages?.join('; ') || payload.message || `HTTP ${response.status}`;
+            throw new Error(`Jira ${response.status}: ${reason}`);
+        }
+        return { response, payload };
+    }
+
+    async verifyJiraIssue(key) {
+        if (!JIRA_KEY_PATTERN.test(key)) throw new Error(`無效的 Jira key：${key}`);
+        const { payload } = await this.openJiraRequest(`/rest/api/3/issue/${encodeURIComponent(key)}?fields=summary,status,project`, { method: 'GET' });
+        const fields = payload.fields || {};
+        return { key: payload.key || key, summary: fields.summary || '', status: fields.status?.name || '', project: fields.project?.key || '' };
+    }
+
+    async deleteAndVerifyJiraIssue(sourceKey, targetKey) {
+        if (!this.jiraConnection) throw new Error(`候選 ${sourceKey} 有 Jira key，但尚未設定 Jira credentials。`);
+        if (sourceKey === targetKey) throw new Error('source Jira 與 target Jira 不可相同。');
+        await this.verifyJiraIssue(targetKey);
+        await this.verifyJiraIssue(sourceKey);
+        await this.openJiraRequest(`/rest/api/3/issue/${encodeURIComponent(sourceKey)}`, { method: 'DELETE' });
+        try {
+            await this.verifyJiraIssue(sourceKey);
+        } catch (error) {
+            if (/Jira 404/.test(error.message)) return { verified: true };
+            throw new Error(`Jira source 已送出刪除，但無法確認是否刪除完成：${error.message}`);
+        }
+        throw new Error(`Jira source ${sourceKey} 刪除請求完成，但 issue 仍存在；已停止清理 OpenSearch embedding。`);
     }
 
     // --- Target lookup + similarity search ---
@@ -378,14 +469,8 @@ class MergePage {
             const hasKey = Boolean(candidate.key);
             const similarityText = Number.isFinite(candidate.similarity) ? `${(candidate.similarity * 100).toFixed(2)}%` : '手動加入';
             const countText = candidate.affectedLogCount === null ? '（查詢失敗）' : `${candidate.affectedLogCount} 筆`;
-            // Merging a keyed candidate deletes its embedding document but does NOT
-            // touch the real Jira issue on Jira Cloud (this tool never calls the Jira
-            // API) — the issue itself will keep existing there with no new logs
-            // pointing at it. That cleanup on the Jira side is the reviewer's
-            // responsibility after merging; the note below exists to make that
-            // explicit rather than silently deleting a still-tracked issue's record.
             const keyNote = hasKey
-                ? `<span class="candidate-keyed-note">⚠ 已對應真實 Jira ${this.escape(candidate.key)}：合併只會刪除這裡的 embedding 紀錄並搬移 error log，不會呼叫 Jira API；${this.escape(candidate.key)} 在 Jira 平台上仍會保留，請合併後自行到 Jira 關閉或標記為 duplicate。</span>`
+                ? `<span class="candidate-keyed-note">⚠ 已對應真實 Jira ${this.escape(candidate.key)}：若已設定 Jira credentials，提交時會先把 error log 指向目標，再刪除 Jira source issue，最後清理 embedding。若未設定 Jira credentials，系統會拒絕此候選，避免只刪除 OpenSearch 紀錄。</span>`
                 : '';
             const mismatchNote = candidate.manualMismatchWarning
                 ? `<span class="candidate-mismatch-note">⚠ 手動加入的候選與目標不完全一致：${this.escape(candidate.manualMismatchWarning)}。請確認這確實是同一個根因才合併。</span>`
@@ -426,13 +511,15 @@ class MergePage {
         if (!selected.length) return;
         const totalLogs = selected.reduce((sum, c) => sum + (c.affectedLogCount || 0), 0);
         const keyedSelected = selected.filter((c) => c.key);
+        const reason = document.getElementById('merge-reason').value.trim();
         document.getElementById('confirm-modal-body').innerHTML = `
             <p>即將把 <strong>${selected.length}</strong> 個候選合併到 <strong>${this.escape(this.target.key)}</strong>：</p>
             <ul class="confirm-candidate-list">
                 ${selected.map((c) => `<li>${this.escape(c.document_id)}${c.key ? ` (${this.escape(c.key)})` : ''}（${c.affectedLogCount ?? '?'} 筆 log）</li>`).join('')}
             </ul>
-            <p>總計影響 <strong>${totalLogs}</strong> 筆 error log 的 jira_reference，並刪除上述 ${selected.length} 個候選文件。</p>
-            ${keyedSelected.length ? `<p class="confirm-keyed-warning">⚠ 其中 ${keyedSelected.length} 個候選已對應真實 Jira（${keyedSelected.map((c) => this.escape(c.key)).join(', ')}）。此工具不會呼叫 Jira API，這些 issue 在 Jira 平台上仍會保留，合併後請自行到 Jira 上關閉或標記為 duplicate。</p>` : ''}`;
+            <p>總計影響 <strong>${totalLogs}</strong> 筆 error log 的 jira_reference，並清理上述 ${selected.length} 個候選 embedding 文件。</p>
+            ${keyedSelected.length ? `<p class="confirm-keyed-warning">⚠ 其中 ${keyedSelected.length} 個候選（${keyedSelected.map((c) => this.escape(c.key)).join(', ')}）會進一步呼叫 Jira DELETE，永久刪除 source issue。目標 ${this.escape(this.target.key)} 不會被刪除。${this.jiraConnection ? '' : '目前尚未設定 Jira credentials，因此這些 keyed candidate 會被拒絕。'}</p>` : ''}
+            <p>合併理由：${this.escape(reason || '（尚未填寫；若沒有 keyed candidate 可留白）')}</p>`;
         document.getElementById('confirm-modal').classList.remove('hidden');
     }
 
@@ -444,6 +531,15 @@ class MergePage {
         const selected = this.getSelectedCandidates();
         this.closeConfirmModal();
         if (!selected.length) return;
+        const reason = document.getElementById('merge-reason').value.trim();
+        if (selected.some((candidate) => candidate.key) && reason.length < 5) {
+            this.showToast('選取了有 Jira key 的候選，請先填寫至少 5 個字元的合併理由。', 'error');
+            return;
+        }
+        if (selected.some((candidate) => candidate.key) && !this.jiraConnection) {
+            this.showToast('選取了有 Jira key 的候選，請先套用 Jira credentials。', 'error');
+            return;
+        }
         document.getElementById('submit-merge-btn').disabled = true;
         const resultEl = document.getElementById('merge-result');
         resultEl.classList.remove('hidden');
@@ -452,8 +548,8 @@ class MergePage {
         const results = [];
         for (const candidate of selected) {
             try {
-                const updated = await this.mergeOneCandidate(candidate);
-                results.push({ candidate, ok: true, updated });
+                const mergeResult = await this.mergeOneCandidate(candidate);
+                results.push({ candidate, ok: true, ...mergeResult });
             } catch (error) {
                 console.error('Failed to merge candidate', candidate.document_id, error);
                 results.push({ candidate, ok: false, error: error.message });
@@ -476,18 +572,25 @@ class MergePage {
         if (candidate.document_id === this.target.document_id) {
             throw new Error('候選與目標 issue 是同一個文件，已跳過。');
         }
+        if (candidate.key && candidate.key === this.target.key) {
+            throw new Error('候選與目標 Jira key 相同，已拒絕刪除。');
+        }
         // Re-read the candidate right before mutating it: the key/index shown in the UI
-        // may be stale by the time the user confirms the merge (someone else could have
-        // changed it, or it could already have been merged in a previous run).
+        // may be stale by the time the user confirms the merge.
         const fresh = await this.rereadCandidate(candidate.document_id);
         if (!fresh) throw new Error('候選文件已不存在，可能已被其他人處理，請重新整理。');
         if ((fresh.key || null) !== (candidate.key || null)) {
             throw new Error(`候選的 key 已變更為 ${fresh.key || '(null)'}（畫面顯示為 ${candidate.key || '(null)'}），請重新整理後再試。`);
         }
         if (fresh.index !== candidate.index) {
-            // Defensive: candidate documents are only ever created in the current
-            // year's index, but guard against acting on an unexpected index anyway.
             throw new Error('候選所在索引與預期不符，已中止以避免誤刪。');
+        }
+
+        // Validate both Jira issues before changing OpenSearch. This avoids moving logs
+        // when credentials, CORS, permissions, or either key is already invalid.
+        if (candidate.key) {
+            await this.verifyJiraIssue(this.target.key);
+            await this.verifyJiraIssue(candidate.key);
         }
 
         const updateResult = await this.openSearchRequest(
@@ -520,11 +623,17 @@ class MergePage {
             throw new Error(`合併後仍有 ${remaining.hits.total.value} 筆 log 指向此候選（可能發生版本衝突），已停止刪除候選文件；請重新整理後再試一次。`);
         }
 
+        // Jira deletion must succeed and be verified before the source embedding is removed.
+        let jira = null;
+        if (candidate.key) {
+            jira = await this.deleteAndVerifyJiraIssue(candidate.key, this.target.key);
+        }
+
         await this.openSearchRequest(
             `/${this.encodeIndex(fresh.index)}/_doc/${this.encodeId(candidate.document_id)}?if_seq_no=${encodeURIComponent(fresh.seqNo)}&if_primary_term=${encodeURIComponent(fresh.primaryTerm)}`,
             { method: 'DELETE' },
         );
-        return updatedCount;
+        return { updated: updatedCount, jira };
     }
 
     async rereadCandidate(docId) {
@@ -548,14 +657,15 @@ class MergePage {
         const failResults = results.filter((r) => !r.ok);
         const totalUpdated = okResults.reduce((sum, r) => sum + (r.updated || 0), 0);
         const mergedKeys = okResults.filter((r) => r.candidate.key).map((r) => r.candidate.key);
+        const title = failResults.length ? '部分完成／有失敗' : '合併完成';
         resultEl.innerHTML = `
             <div class="merge-result-summary">
-                <strong>合併完成</strong>
-                <p>成功合併 ${okResults.length} 個候選，共更新 ${totalUpdated} 筆 error log 並刪除對應候選文件。${failResults.length ? `${failResults.length} 個候選失敗，未刪除。` : ''}</p>
+                <strong>${title}</strong>
+                <p>成功合併 ${okResults.length} 個候選，共更新 ${totalUpdated} 筆 error log 並完成對應清理。${failResults.length ? `${failResults.length} 個候選失敗，請依錯誤處理。` : ''}</p>
             </div>
-            ${okResults.length ? `<ul class="merge-result-list">${okResults.map((r) => `<li class="is-ok">✓ ${this.escape(r.candidate.document_id)}${r.candidate.key ? ` (${this.escape(r.candidate.key)})` : ''}：更新 ${r.updated} 筆 log</li>`).join('')}</ul>` : ''}
+            ${okResults.length ? `<ul class="merge-result-list">${okResults.map((r) => `<li class="is-ok">✓ ${this.escape(r.candidate.document_id)}${r.candidate.key ? ` (${this.escape(r.candidate.key)})：Jira source 已驗證刪除` : ''}：更新 ${r.updated} 筆 log</li>`).join('')}</ul>` : ''}
             ${failResults.length ? `<ul class="merge-result-list">${failResults.map((r) => `<li class="is-fail">✗ ${this.escape(r.candidate.document_id)}：${this.escape(r.error)}</li>`).join('')}</ul>` : ''}
-            ${mergedKeys.length ? `<p class="confirm-keyed-warning">⚠ 請記得到 Jira 平台手動關閉或標記以下 issue 為 duplicate：${mergedKeys.map((k) => this.escape(k)).join(', ')}（這裡的刪除只影響 OpenSearch，不會呼叫 Jira API）。</p>` : ''}
+            ${mergedKeys.length ? `<p class="confirm-keyed-warning">已驗證刪除 Jira source：${mergedKeys.map((k) => this.escape(k)).join(', ')}；target ${this.escape(this.target.key)} 未被刪除。</p>` : ''}
         `;
         if (failResults.length) {
             this.showToast(`${failResults.length} 個候選合併失敗，請查看結果清單。`, 'error');
