@@ -10,6 +10,8 @@ const CANDIDATE_INDEX = 'jira_issue_embedding_titan_v2';
 const ERROR_INDEXES = 'error_log_dev_*,error_log_stage_*,error_log_prod_*';
 const READ_TIMEOUT_MS = 10 * 60 * 1000;
 const READ_TIMEOUT_LABEL = '10 分鐘';
+const CONNECTION_TEST_TIMEOUT_MS = 15000;
+const CONNECTION_TEST_TIMEOUT_MS = 15000;
 const CONNECTION_STORAGE_KEYS = {
     url: 'errorLogReview.opensearchUrl',
     username: 'errorLogReview.opensearchUsername',
@@ -132,7 +134,7 @@ class MergePage {
             return await this.openSearchRequest(`/${this.encodeIndex(CANDIDATE_INDEX)}/_count`, {
                 method: 'POST',
                 body: JSON.stringify({ query: { match_all: {} } }),
-            }, 15000);
+            }, CONNECTION_TEST_TIMEOUT_MS);
         } finally {
             this.connection = previousConnection;
         }
@@ -215,7 +217,7 @@ class MergePage {
 
     encodeIndex(index) { return encodeURIComponent(index).replace(/%2A/gi, '*').replace(/%2C/gi, ','); }
 
-    async openSearchRequest(path, options = {}, timeoutMs = 15000) {
+    async openSearchRequest(path, options = {}, timeoutMs = READ_TIMEOUT_MS) {
         if (!this.connection) throw new Error('尚未設定 OpenSearch 查詢連線');
         const headers = { Accept: 'application/json', Authorization: this.connection.authorization };
         if (options.body) headers['Content-Type'] = 'application/json';
@@ -230,7 +232,12 @@ class MergePage {
                 signal: controller.signal,
             });
         } catch (error) {
-            if (error?.name === 'AbortError') throw new Error('OpenSearch 連線測試逾時（15 秒）；請確認 VPN、VPC 網路路徑與 endpoint。');
+            if (error?.name === 'AbortError') {
+                const timeoutMessage = timeoutMs === CONNECTION_TEST_TIMEOUT_MS
+                    ? `OpenSearch 連線測試逾時（${CONNECTION_TEST_TIMEOUT_MS / 1000} 秒）；請確認 VPN、VPC 網路路徑與 endpoint。`
+                    : `OpenSearch 查詢超過 ${READ_TIMEOUT_LABEL}，已自動取消；請縮短查詢範圍或減少資料量。`;
+                throw new Error(timeoutMessage);
+            }
             throw new Error(`無法連線 OpenSearch（${error.message}）；請檢查 TLS、CORS 與網路。`);
         } finally {
             clearTimeout(timeoutId);
