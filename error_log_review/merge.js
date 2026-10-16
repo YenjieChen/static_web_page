@@ -99,12 +99,43 @@ class MergePage {
             this.showToast('OpenSearch 查詢需要帳號與密碼。', 'error');
             return;
         }
-        this.connection = { url, authorization: `Basic ${this.toBasicAuth(username, password)}` };
-        this.writeStorage(localStorage, CONNECTION_STORAGE_KEYS.url, url);
-        this.writeStorage(localStorage, CONNECTION_STORAGE_KEYS.username, username);
-        this.writeStorage(sessionStorage, CONNECTION_STORAGE_KEYS.password, password);
-        this.setStatus('connection-status', '查詢設定已套用', 'success');
-        document.getElementById('connection-details').textContent = `Host：${parsed.host}｜只允許查詢｜credentials 不執行 mutation`;
+        const connectButton = document.getElementById('connect-btn');
+        const previousConnection = this.connection;
+        const candidateConnection = { url, authorization: `Basic ${this.toBasicAuth(username, password)}` };
+        connectButton.disabled = true;
+        this.setStatus('connection-status', '正在測試 OpenSearch 查詢連線…', 'pending');
+        document.getElementById('connection-details').textContent = `Host：${parsed.host}｜正在執行唯讀連線測試（最多 15 秒）`;
+        try {
+            await this.testOpenSearchConnection(candidateConnection);
+            this.connection = candidateConnection;
+            this.writeStorage(localStorage, CONNECTION_STORAGE_KEYS.url, url);
+            this.writeStorage(localStorage, CONNECTION_STORAGE_KEYS.username, username);
+            this.writeStorage(sessionStorage, CONNECTION_STORAGE_KEYS.password, password);
+            this.setStatus('connection-status', '查詢設定已套用並驗證成功', 'success');
+            document.getElementById('connection-details').textContent = `Host：${parsed.host}｜唯讀查詢連線已驗證｜credentials 不執行 mutation`;
+            this.showToast('OpenSearch 查詢設定已驗證並套用。', 'success');
+        } catch (error) {
+            this.connection = previousConnection;
+            const message = this.describeConnectionError(error);
+            this.setStatus('connection-status', 'OpenSearch 連線測試失敗', 'error');
+            document.getElementById('connection-details').textContent = `Host：${parsed.host}｜${message}`;
+            this.showToast(message, 'error');
+        } finally {
+            connectButton.disabled = false;
+        }
+    }
+
+    async testOpenSearchConnection(connection) {
+        const previousConnection = this.connection;
+        this.connection = connection;
+        try {
+            return await this.openSearchRequest(`/${this.encodeIndex(CANDIDATE_INDEX)}/_count`, {
+                method: 'POST',
+                body: JSON.stringify({ query: { match_all: {} } }),
+            }, 15000);
+        } finally {
+            this.connection = previousConnection;
+        }
     }
 
     clearConnectionSettings() {
@@ -184,13 +215,13 @@ class MergePage {
 
     encodeIndex(index) { return encodeURIComponent(index).replace(/%2A/gi, '*').replace(/%2C/gi, ','); }
 
-    async openSearchRequest(path, options = {}) {
+    async openSearchRequest(path, options = {}, timeoutMs = 15000) {
         if (!this.connection) throw new Error('尚未設定 OpenSearch 查詢連線');
         const headers = { Accept: 'application/json', Authorization: this.connection.authorization };
         if (options.body) headers['Content-Type'] = 'application/json';
         let response;
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), READ_TIMEOUT_MS);
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
         try {
             response = await fetch(`${this.connection.url}${path}`, {
                 ...options,
@@ -199,9 +230,7 @@ class MergePage {
                 signal: controller.signal,
             });
         } catch (error) {
-            if (error?.name === 'AbortError') {
-                throw new Error(`OpenSearch 查詢超過 ${READ_TIMEOUT_LABEL}，已自動取消；請縮短查詢範圍或減少資料量。`);
-            }
+            if (error?.name === 'AbortError') throw new Error('OpenSearch 連線測試逾時（15 秒）；請確認 VPN、VPC 網路路徑與 endpoint。');
             throw new Error(`無法連線 OpenSearch（${error.message}）；請檢查 TLS、CORS 與網路。`);
         } finally {
             clearTimeout(timeoutId);

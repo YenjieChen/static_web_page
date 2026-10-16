@@ -370,7 +370,7 @@ class ReviewPage {
         });
     }
 
-    async openSearchRequest(path, options = {}) {
+    async openSearchRequest(path, options = {}, timeoutMs = 15000) {
         if (!this.connection) throw new Error('尚未設定 OpenSearch 連線');
         const headers = {
             Accept: 'application/json',
@@ -378,14 +378,20 @@ class ReviewPage {
         };
         if (options.body) headers['Content-Type'] = 'application/json';
         let response;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
         try {
             response = await fetch(`${this.connection.url}${path}`, {
                 ...options,
                 headers,
                 credentials: 'omit',
+                signal: controller.signal,
             });
         } catch (error) {
-            throw new Error(`無法連線 OpenSearch。請檢查 TLS 憑證、CORS 與網路設定（${error.message}）。`);
+            if (error?.name === 'AbortError') throw new Error('OpenSearch 連線測試逾時（15 秒）；請確認 VPN、VPC 網路路徑與 endpoint。');
+            throw new Error(`無法連線 OpenSearch（${error.message}）；請檢查 TLS、CORS 與網路。`);
+        } finally {
+            clearTimeout(timeoutId);
         }
         const text = await response.text();
         let payload = {};
@@ -415,11 +421,44 @@ class ReviewPage {
             this.showToast('直接查詢 OpenSearch 需要帳號與密碼。', 'error');
             return;
         }
-        this.connection = { url, username, authorization: this.toBasicAuth(username, password) };
-        this.persistConnectionFields(url, username, password);
-        this.setConnectedState('正在直接查詢 OpenSearch...', 'pending');
-        document.getElementById('connection-details').textContent = `Host：${parsed.host}｜帳號：已輸入｜密碼：已輸入（本分頁保存）｜credentials 僅存在本頁記憶體`;
-        await this.load();
+        const connectButton = document.getElementById('connect-btn');
+        const previousConnection = this.connection;
+        const candidateConnection = { url, username, authorization: this.toBasicAuth(username, password) };
+        connectButton.disabled = true;
+        this.setConnectedState('正在測試 OpenSearch 查詢連線…', 'pending');
+        document.getElementById('connection-details').textContent = `Host：${parsed.host}｜正在執行唯讀連線測試（最多 15 秒）`;
+        try {
+            await this.testOpenSearchConnection(candidateConnection);
+            this.connection = candidateConnection;
+            this.persistConnectionFields(url, username, password);
+            this.setConnectedState('查詢設定已驗證，正在載入資料…', 'pending');
+            document.getElementById('connection-details').textContent = `Host：${parsed.host}｜唯讀查詢連線已驗證｜credentials 僅存在本頁記憶體`;
+            await this.load();
+            this.showToast('OpenSearch 查詢設定已驗證並套用。', 'success');
+        } catch (error) {
+            this.connection = previousConnection;
+            const message = this.describeConnectionError(error);
+            this.setConnectedState('OpenSearch 連線或查詢失敗', 'error');
+            document.getElementById('connection-details').textContent = `Host：${parsed.host}｜${message}`;
+            this.setList(`<div class="error-state">${this.escape(message)}</div>`);
+            this.updateSummary();
+            this.showToast(message, 'error');
+        } finally {
+            connectButton.disabled = false;
+        }
+    }
+
+    async testOpenSearchConnection(connection) {
+        const previousConnection = this.connection;
+        this.connection = connection;
+        try {
+            return await this.openSearchRequest(`/${this.encodeIndex(CANDIDATE_INDEX)}/_count`, {
+                method: 'POST',
+                body: JSON.stringify({ query: { match_all: {} } }),
+            }, 15000);
+        } finally {
+            this.connection = previousConnection;
+        }
     }
 
     clearConnectionSettings() {
