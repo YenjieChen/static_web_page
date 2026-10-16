@@ -11,7 +11,6 @@ const ERROR_INDEXES = 'error_log_dev_*,error_log_stage_*,error_log_prod_*';
 const READ_TIMEOUT_MS = 10 * 60 * 1000;
 const READ_TIMEOUT_LABEL = '10 分鐘';
 const CONNECTION_TEST_TIMEOUT_MS = 15000;
-const CONNECTION_TEST_TIMEOUT_MS = 15000;
 const CONNECTION_STORAGE_KEYS = {
     url: 'errorLogReview.opensearchUrl',
     username: 'errorLogReview.opensearchUsername',
@@ -68,9 +67,15 @@ class MergePage {
     }
 
     restoreConnectionFields() {
-        document.getElementById('opensearch-url').value = this.readStorage(localStorage, CONNECTION_STORAGE_KEYS.url);
-        document.getElementById('opensearch-username').value = this.readStorage(localStorage, CONNECTION_STORAGE_KEYS.username);
-        document.getElementById('opensearch-password').value = this.readStorage(sessionStorage, CONNECTION_STORAGE_KEYS.password);
+        const url = this.readStorage(localStorage, CONNECTION_STORAGE_KEYS.url);
+        const username = this.readStorage(localStorage, CONNECTION_STORAGE_KEYS.username);
+        const password = this.readStorage(sessionStorage, CONNECTION_STORAGE_KEYS.password);
+        document.getElementById('opensearch-url').value = url;
+        document.getElementById('opensearch-username').value = username;
+        document.getElementById('opensearch-password').value = password;
+        if (url || username || password) {
+            document.getElementById('connection-details').textContent = '已恢復上次輸入；請按「套用查詢設定」重新建立本頁連線。';
+        }
     }
 
     readStorage(storage, key) {
@@ -453,6 +458,14 @@ class MergePage {
         resultEl.innerHTML = `<div class="merge-result-summary"><strong>Merge Lambda：${this.escape(result.status || 'UNKNOWN')}</strong><p>source：${this.escape(result.source || this.target?.key || '')}；embedding index：${this.escape(result.embedding_index || CANDIDATE_INDEX)}</p><p>下列紀錄由 Lambda 回傳，包含 doc id、reference 更新、Jira archival 與 embedding deletion 驗證。</p></div>${rows ? `<ul class="merge-result-list">${rows}</ul>` : ''}${errors ? `<ul class="merge-result-list">${errors}</ul>` : ''}<details><summary>Lambda execution result / log</summary><pre>${this.escape(JSON.stringify(result, null, 2))}</pre></details>`;
         this.setStatus('aws-status', `最近執行：${result.status || 'UNKNOWN'}`, result.status === 'COMPLETED' ? 'success' : 'error');
         this.showToast(result.status === 'COMPLETED' ? 'Merge Lambda 執行完成。' : 'Merge Lambda 執行失敗或部分完成，請查看說明區。', result.status === 'COMPLETED' ? 'success' : 'error');
+    }
+
+    describeConnectionError(error) {
+        const message = error?.message || '未知錯誤';
+        if (/Failed to fetch|CORS|TLS|憑證|NetworkError/i.test(message)) {
+            return `${message}；瀏覽器直連需要 OpenSearch 允許此 GitHub Pages origin 的 CORS，且 TLS 憑證必須被瀏覽器信任。`;
+        }
+        return message;
     }
 
     showToast(message, type = '') {

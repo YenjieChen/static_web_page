@@ -463,7 +463,7 @@ class ReviewPage {
             return await this.openSearchRequest(`/${this.encodeIndex(CANDIDATE_INDEX)}/_count`, {
                 method: 'POST',
                 body: JSON.stringify({ query: { match_all: {} } }),
-            }, 15000);
+            }, CONNECTION_TEST_TIMEOUT_MS);
         } finally {
             this.connection = previousConnection;
         }
