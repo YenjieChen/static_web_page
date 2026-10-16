@@ -74,7 +74,7 @@
     <main class="page-shell">
         <section class="notice" aria-label="合併說明">
             <strong>合併原則</strong>
-            <span>例如將 <strong>VEL-2242</strong> 合併到 <strong>VEL-2176</strong>：前端會以 VEL-2176 作為保留的 source，並將勾選的 Jira keys 送為 target，例如 <code>{"task":"merge_jira","source":"VEL-2176","target":["VEL-2242"]}</code>。AWS SDK v3 會使用已驗證的 temporary credentials 直接 Invoke Lambda；Lambda 會找到兩個 embedding doc id、搬移 error log references、在 Jira duplicate issue 加上重複標註後刪除它，再刪除 duplicate embedding 並驗證所有結果。</span>
+            <span>例如將 <strong>VEL-2242</strong> 合併到 <strong>VEL-2176</strong>：前端會以 VEL-2176 作為保留的 source，並將勾選的 Jira keys 送為 target，例如 <code>{"task":"merge_jira","source":"VEL-2176","target":["VEL-2242"]}</code>。AWS SDK v3 會使用已驗證的 temporary credentials 直接 Invoke Lambda；Lambda 會找到兩個 embedding doc id、搬移 error log references、在 Jira duplicate issue 加上重複標註後封存它，再刪除 duplicate embedding 並驗證所有結果。</span>
         </section>
 
         <section class="target-panel" aria-label="保留的 Jira Issue">
@@ -90,13 +90,13 @@
 
         <section id="candidate-section" class="candidate-section hidden" aria-label="相似候選清單">
             <div class="candidate-section-header">
-                <h2>要合併並刪除的 Jira candidates（最多 30 筆）</h2>
+                <h2>要合併並封存的 Jira candidates（最多 30 筆）</h2>
                 <span id="candidate-count" class="candidate-count"></span>
             </div>
             <div id="candidate-list" class="candidate-merge-list"></div>
             <form id="manual-add-form" class="manual-add-form">
                 <label>
-                    <span>手動新增要刪除的 candidate（Jira key）</span>
+                    <span>手動新增要封存的 candidate（Jira key）</span>
                     <input id="manual-add-key" type="text" placeholder="例如 VEL-2242" autocomplete="off" spellcheck="false">
                 </label>
                 <button class="btn btn-ghost" id="manual-add-btn" type="submit">加入 candidate</button>
@@ -121,7 +121,7 @@
             </div>
             <div class="modal-body">
                 <div id="confirm-modal-body"></div>
-                <p class="modal-warning">前端不會直接刪除 Jira 或 OpenSearch。AWS SDK 會使用已驗證的 temporary credentials 呼叫 Lambda；Lambda 會執行不可逆的 Jira deletion、error-log reference 更新與 embedding deletion，並把執行 log/result 回傳到下方說明區。</p>
+                <p class="modal-warning">前端不會直接封存 Jira 或修改 OpenSearch。AWS SDK 會使用已驗證的 temporary credentials 呼叫 Lambda；Lambda 會執行不可逆的 Jira archival、error-log reference 更新與 embedding deletion，並把執行 log/result 回傳到下方說明區。</p>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-ghost" id="confirm-modal-cancel" type="button">取消</button>
