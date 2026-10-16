@@ -1,8 +1,8 @@
-/* The browser only queries OpenSearch and directly invokes the controlled Lambda with AWS SDK v3.
+/* The browser only queries OpenSearch and directly invokes the controlled Lambda with the AWS SDK.
+ * AWS SDK modules are loaded only when the user verifies AWS credentials, so an SDK/CDN failure
+ * cannot prevent the OpenSearch settings form and cached settings from initializing.
  * Temporary AWS credentials are memory-only: never persisted, logged, or included in the payload.
  */
-import { LambdaClient, InvokeCommand } from 'https://esm.sh/@aws-sdk/client-lambda@3.1010.0?bundle';
-import { STSClient, GetCallerIdentityCommand } from 'https://esm.sh/@aws-sdk/client-sts@3.1010.0?bundle';
 
 const AWS_REGION = 'ap-northeast-1';
 const LAMBDA_FUNCTION_NAME = 'vortex-ai-ErrorMessageDailyReport';
@@ -160,8 +160,9 @@ class MergePage {
     async applyAwsCredentials() {
         const text = document.getElementById('aws-credentials').value;
         try {
+            const { STSClient, GetCallerIdentityCommand } = await this.loadAwsSdk();
             this.awsCredentials = this.parseAwsCredentials(text);
-        const sts = new STSClient({ region: AWS_REGION, credentials: this.awsCredentials });
+            const sts = new STSClient({ region: AWS_REGION, credentials: this.awsCredentials });
             const identity = await sts.send(new GetCallerIdentityCommand({}));
             this.awsIdentity = identity;
             const arn = identity.Arn || '';
@@ -178,6 +179,23 @@ class MergePage {
         }
     }
 
+
+    async loadAwsSdk() {
+        try {
+            const [lambdaModule, stsModule] = await Promise.all([
+                import('https://esm.sh/@aws-sdk/client-lambda@3.1010.0?bundle'),
+                import('https://esm.sh/@aws-sdk/client-sts@3.1010.0?bundle'),
+            ]);
+            return {
+                LambdaClient: lambdaModule.LambdaClient,
+                InvokeCommand: lambdaModule.InvokeCommand,
+                STSClient: stsModule.STSClient,
+                GetCallerIdentityCommand: stsModule.GetCallerIdentityCommand,
+            };
+        } catch (error) {
+            throw new Error(`無法載入 AWS SDK：${error?.message || '未知錯誤'}；OpenSearch 查詢設定不受影響。`);
+        }
+    }
     parseAwsCredentials(text) {
         const read = (name) => {
             const match = String(text || '').match(new RegExp(`^\\s*${name}\\s*=\\s*(.+?)\\s*$`, 'mi'));
@@ -252,6 +270,7 @@ class MergePage {
 
     async invokeMergeLambda(source, targets) {
         if (!this.awsCredentials) throw new Error('尚未驗證 AWS credentials。');
+        const { LambdaClient, InvokeCommand } = await this.loadAwsSdk();
         const lambda = new LambdaClient({ region: AWS_REGION, credentials: this.awsCredentials });
         const command = new InvokeCommand({
             FunctionName: LAMBDA_FUNCTION_NAME,
@@ -397,9 +416,10 @@ class MergePage {
         }
         list.innerHTML = `<label class="checkbox-field candidate-select-all"><input type="checkbox" data-select-all-candidates><span>全選 candidates</span></label>${this.candidates.map((candidate, index) => {
             const similarity = Number.isFinite(candidate.similarity) ? `${(candidate.similarity * 100).toFixed(2)}%` : '手動加入';
+            const label = candidate.manuallyAdded ? '手動加入' : `相似度 ${similarity}`;
             const count = candidate.affectedLogCount === null ? '查詢失敗' : `${candidate.affectedLogCount} 筆`;
-            return `<label class="candidate-merge-item"><input type="checkbox" data-candidate-checkbox data-index="${index}"><div class="candidate-merge-body"><div class="candidate-merge-top"><span class="badge badge-similarity">${candidate.manuallyAdded ? '手動加入' : `相似度 ${similarity}`}</span><span class="candidate-merge-count">影響 error log：${count}</span><span class="badge badge-warning">封存 Jira ${this.escape(candidate.key || '無 key')}</span></div><p class="candidate-merge-summary">${this.escape(candidate.summary || candidate.error_message || '未提供 summary')}</p><p class="candidate-merge-meta">doc_id：${this.escape(candidate.document_id)}　site：${this.escape(candidate.site || '')}　log_group：${this.escape(candidate.log_group || '')}</p></div></label>`;
-        }).join('');
+            return `<label class="candidate-merge-item"><input type="checkbox" data-candidate-checkbox data-index="${index}"><div class="candidate-merge-body"><div class="candidate-merge-top"><span class="badge badge-similarity">${label}</span><span class="candidate-merge-count">影響 error log：${count}</span><span class="badge badge-warning">封存 Jira ${this.escape(candidate.key || '無 key')}</span></div><p class="candidate-merge-summary">${this.escape(candidate.summary || candidate.error_message || '未提供 summary')}</p><p class="candidate-merge-meta">doc_id：${this.escape(candidate.document_id)}　site：${this.escape(candidate.site || '')}　log_group：${this.escape(candidate.log_group || '')}</p></div></label>`;
+        }).join('')}`;
         this.updateSubmitButtonState();
     }
 
