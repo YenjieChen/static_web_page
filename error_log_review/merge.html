@@ -74,7 +74,7 @@
     <main class="page-shell">
         <section class="notice" aria-label="合併說明">
             <strong>合併原則</strong>
-            <span>例如將 <strong>VEL-2242</strong> 合併到 <strong>VEL-2176</strong>：前端會以 VEL-2176 作為保留的 source，並將勾選的 Jira keys 送為 target，例如 <code>{"task":"merge_jira","source":"VEL-2176","target":["VEL-2242"]}</code>。AWS SDK v3 會使用已驗證的 temporary credentials 直接 Invoke Lambda；Lambda 會找到兩個 embedding doc id、搬移 error log references、在 Jira duplicate issue 加上重複標註後封存它，再刪除 duplicate embedding 並驗證所有結果。</span>
+            <span>例如先保留 <strong>VEL-2174</strong>，AI 會列出相似 candidates；請勾選不相似的項目排除，未勾選項目才會送入既有 <code>merge_jira</code> 流程。AWS SDK v3 會使用已驗證的 temporary credentials 直接 Invoke Lambda；Lambda 會找到 embedding doc id、搬移 error log references、在 Jira duplicate issue 加上重複標註後封存它，再刪除 duplicate embedding 並驗證所有結果。</span>
         </section>
 
         <section class="target-panel" aria-label="保留的 Jira Issue">
@@ -90,9 +90,10 @@
 
         <section id="candidate-section" class="candidate-section hidden" aria-label="相似候選清單">
             <div class="candidate-section-header">
-                <h2>要合併並封存的 Jira candidates（最多 30 筆）</h2>
+                <h2>AI 相似度候選清單（最多 30 筆）</h2>
                 <span id="candidate-count" class="candidate-count"></span>
             </div>
+            <p class="candidate-review-hint">AI 會逐筆判斷 source 與候選是否為同一個問題。請勾選「不相似／排除」的候選；按下合併後，只有未勾選的候選會送入既有 <code>merge_jira</code> 流程。</p>
             <div id="candidate-list" class="candidate-merge-list"></div>
             <form id="manual-add-form" class="manual-add-form">
                 <label>
