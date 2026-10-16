@@ -8,6 +8,8 @@ const AWS_REGION = 'ap-northeast-1';
 const LAMBDA_FUNCTION_NAME = 'vortex-ai-ErrorMessageDailyReport';
 const CANDIDATE_INDEX = 'jira_issue_embedding_titan_v2';
 const ERROR_INDEXES = 'error_log_dev_*,error_log_stage_*,error_log_prod_*';
+const READ_TIMEOUT_MS = 10 * 60 * 1000;
+const READ_TIMEOUT_LABEL = '10 分鐘';
 const CONNECTION_STORAGE_KEYS = {
     url: 'errorLogReview.opensearchUrl',
     username: 'errorLogReview.opensearchUsername',
@@ -44,7 +46,11 @@ class MergePage {
             this.searchSimilarCandidates();
         });
         document.getElementById('candidate-list').addEventListener('change', (event) => {
-            if (event.target.matches('[data-candidate-checkbox]')) this.updateSubmitButtonState();
+            if (event.target.matches('[data-select-all-candidates]')) {
+                this.toggleAllCandidates(event.target.checked);
+            } else if (event.target.matches('[data-candidate-checkbox]')) {
+                this.updateSubmitButtonState();
+            }
         });
         document.getElementById('manual-add-form').addEventListener('submit', (event) => {
             event.preventDefault();
@@ -183,10 +189,22 @@ class MergePage {
         const headers = { Accept: 'application/json', Authorization: this.connection.authorization };
         if (options.body) headers['Content-Type'] = 'application/json';
         let response;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), READ_TIMEOUT_MS);
         try {
-            response = await fetch(`${this.connection.url}${path}`, { ...options, headers, credentials: 'omit' });
+            response = await fetch(`${this.connection.url}${path}`, {
+                ...options,
+                headers,
+                credentials: 'omit',
+                signal: controller.signal,
+            });
         } catch (error) {
+            if (error?.name === 'AbortError') {
+                throw new Error(`OpenSearch 查詢超過 ${READ_TIMEOUT_LABEL}，已自動取消；請縮短查詢範圍或減少資料量。`);
+            }
             throw new Error(`無法連線 OpenSearch（${error.message}）；請檢查 TLS、CORS 與網路。`);
+        } finally {
+            clearTimeout(timeoutId);
         }
         return this.parseResponse(response, 'OpenSearch');
     }
@@ -336,7 +354,7 @@ class MergePage {
             this.updateSubmitButtonState();
             return;
         }
-        list.innerHTML = this.candidates.map((candidate, index) => {
+        list.innerHTML = `<label class="checkbox-field candidate-select-all"><input type="checkbox" data-select-all-candidates><span>全選 candidates</span></label>${this.candidates.map((candidate, index) => {
             const similarity = Number.isFinite(candidate.similarity) ? `${(candidate.similarity * 100).toFixed(2)}%` : '手動加入';
             const count = candidate.affectedLogCount === null ? '查詢失敗' : `${candidate.affectedLogCount} 筆`;
             return `<label class="candidate-merge-item"><input type="checkbox" data-candidate-checkbox data-index="${index}"><div class="candidate-merge-body"><div class="candidate-merge-top"><span class="badge badge-similarity">${candidate.manuallyAdded ? '手動加入' : `相似度 ${similarity}`}</span><span class="candidate-merge-count">影響 error log：${count}</span><span class="badge badge-warning">封存 Jira ${this.escape(candidate.key || '無 key')}</span></div><p class="candidate-merge-summary">${this.escape(candidate.summary || candidate.error_message || '未提供 summary')}</p><p class="candidate-merge-meta">doc_id：${this.escape(candidate.document_id)}　site：${this.escape(candidate.site || '')}　log_group：${this.escape(candidate.log_group || '')}</p></div></label>`;
@@ -344,8 +362,22 @@ class MergePage {
         this.updateSubmitButtonState();
     }
 
+    toggleAllCandidates(checked) {
+        document.querySelectorAll('#candidate-list [data-candidate-checkbox]').forEach((checkbox) => {
+            checkbox.checked = checked;
+        });
+        this.updateSubmitButtonState();
+    }
+
     updateSubmitButtonState() {
-        document.getElementById('submit-merge-btn').disabled = !this.getSelectedCandidates().length;
+        const checkboxes = [...document.querySelectorAll('#candidate-list [data-candidate-checkbox]')];
+        const selectedCount = checkboxes.filter((checkbox) => checkbox.checked).length;
+        const selectAll = document.querySelector('#candidate-list [data-select-all-candidates]');
+        if (selectAll) {
+            selectAll.checked = checkboxes.length > 0 && selectedCount === checkboxes.length;
+            selectAll.indeterminate = selectedCount > 0 && selectedCount < checkboxes.length;
+        }
+        document.getElementById('submit-merge-btn').disabled = selectedCount === 0;
     }
 
     getSelectedCandidates() {

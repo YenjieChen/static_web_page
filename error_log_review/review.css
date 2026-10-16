@@ -284,7 +284,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--primary); box-sh
 
 .candidate-section { margin-bottom: 20px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); }
 .candidate-section-header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-.candidate-section-header h2 { margin: 0; font-size: 17px; }
+.candidate-select-all { margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-muted); }
+.candidate-select-all input { width: 17px; height: 17px; accent-color: var(--primary); }
 .candidate-count { color: var(--muted); font-size: 13px; }
 .candidate-merge-list { display: grid; gap: 10px; }
 .candidate-merge-item { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: #fff; cursor: pointer; }
