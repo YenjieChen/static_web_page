@@ -1,16 +1,11 @@
-/* Direct browser mode. OpenSearch credentials follow the existing page behavior. Jira credentials are
- * deliberately memory-only and are used only for explicit deletion of keyed source issues.
- *
- * Merge flow:
- *   1. Look up the target embedding document.
- *   2. Search similar candidates in the same site + log_group.
- *   3. Re-read each candidate immediately before mutation.
- *   4. For keyed candidates, verify source and target Jira issues, then move OpenSearch references,
- *      delete the source Jira issue, verify it is absent, and finally delete the source embedding.
- *   5. For no-key candidates, move references and delete only the orphan embedding.
- *
- * Jira token is never written to localStorage/sessionStorage, URL, console, or result markup.
+/* The browser only queries OpenSearch and directly invokes the controlled Lambda with AWS SDK v3.
+ * Temporary AWS credentials are memory-only: never persisted, logged, or included in the payload.
  */
+import { LambdaClient, InvokeCommand } from 'https://esm.sh/@aws-sdk/client-lambda@3.1010.0?bundle';
+import { STSClient, GetCallerIdentityCommand } from 'https://esm.sh/@aws-sdk/client-sts@3.1010.0?bundle';
+
+const AWS_REGION = 'ap-northeast-1';
+const LAMBDA_FUNCTION_NAME = 'vortex-ai-ErrorMessageDailyReport';
 const CANDIDATE_INDEX = 'jira_issue_embedding_titan_v2';
 const ERROR_INDEXES = 'error_log_dev_*,error_log_stage_*,error_log_prod_*';
 const CONNECTION_STORAGE_KEYS = {
@@ -25,10 +20,10 @@ const JIRA_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
 class MergePage {
     constructor() {
         this.connection = null;
-        this.jiraConnection = null;
+        this.awsCredentials = null;
+        this.awsIdentity = null;
         this.target = null;
         this.candidates = [];
-        this.pendingSubmit = null;
         this.restoreConnectionFields();
         this.bindEvents();
     }
@@ -39,11 +34,11 @@ class MergePage {
             this.applyConnectionSettings();
         });
         document.getElementById('clear-connection-btn').addEventListener('click', () => this.clearConnectionSettings());
-        document.getElementById('jira-connection-form').addEventListener('submit', (event) => {
+        document.getElementById('aws-form').addEventListener('submit', (event) => {
             event.preventDefault();
-            this.applyJiraConnectionSettings();
+            this.applyAwsCredentials();
         });
-        document.getElementById('jira-clear-btn').addEventListener('click', () => this.clearJiraConnectionSettings());
+        document.getElementById('aws-clear-btn').addEventListener('click', () => this.clearAwsCredentials());
         document.getElementById('target-form').addEventListener('submit', (event) => {
             event.preventDefault();
             this.searchSimilarCandidates();
@@ -64,24 +59,10 @@ class MergePage {
         });
     }
 
-    // --- Connection handling (mirrors review.js so credentials/UX stay consistent) ---
-
     restoreConnectionFields() {
-        const url = this.readStorage(localStorage, CONNECTION_STORAGE_KEYS.url);
-        const username = this.readStorage(localStorage, CONNECTION_STORAGE_KEYS.username);
-        const password = this.readStorage(sessionStorage, CONNECTION_STORAGE_KEYS.password);
-        document.getElementById('opensearch-url').value = url;
-        document.getElementById('opensearch-username').value = username;
-        document.getElementById('opensearch-password').value = password;
-        if (url || username || password) {
-            document.getElementById('connection-details').textContent = '已恢復上次輸入；請按「套用連線設定」重新建立本頁連線。';
-        }
-    }
-
-    persistConnectionFields(url, username, password) {
-        this.writeStorage(localStorage, CONNECTION_STORAGE_KEYS.url, url);
-        this.writeStorage(localStorage, CONNECTION_STORAGE_KEYS.username, username);
-        this.writeStorage(sessionStorage, CONNECTION_STORAGE_KEYS.password, password);
+        document.getElementById('opensearch-url').value = this.readStorage(localStorage, CONNECTION_STORAGE_KEYS.url);
+        document.getElementById('opensearch-username').value = this.readStorage(localStorage, CONNECTION_STORAGE_KEYS.username);
+        document.getElementById('opensearch-password').value = this.readStorage(sessionStorage, CONNECTION_STORAGE_KEYS.password);
     }
 
     readStorage(storage, key) {
@@ -92,14 +73,8 @@ class MergePage {
         try {
             if (value) storage.setItem(key, value); else storage.removeItem(key);
         } catch (error) {
-            console.warn('Unable to persist connection setting:', error);
+            console.warn('Unable to persist setting:', error);
         }
-    }
-
-    clearStoredConnectionFields() {
-        this.writeStorage(localStorage, CONNECTION_STORAGE_KEYS.url, '');
-        this.writeStorage(localStorage, CONNECTION_STORAGE_KEYS.username, '');
-        this.writeStorage(sessionStorage, CONNECTION_STORAGE_KEYS.password, '');
     }
 
     async applyConnectionSettings() {
@@ -109,78 +84,89 @@ class MergePage {
         let parsed;
         try {
             parsed = new URL(url);
-            if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) {
-                throw new Error('invalid endpoint');
-            }
+            if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) throw new Error('invalid endpoint');
         } catch {
             this.showToast('請輸入不含帳密、查詢參數或 hash 的 HTTPS OpenSearch URL。', 'error');
             return;
         }
         if (!username || !password) {
-            this.showToast('直接查詢 OpenSearch 需要帳號與密碼。', 'error');
+            this.showToast('OpenSearch 查詢需要帳號與密碼。', 'error');
             return;
         }
-        this.connection = { url, username, authorization: this.toBasicAuth(username, password) };
-        this.persistConnectionFields(url, username, password);
-        this.setConnectedState('連線設定已套用', 'success');
-        document.getElementById('connection-details').textContent = `Host：${parsed.host}｜帳號：已輸入｜密碼：已輸入（本分頁保存）｜credentials 僅存在本頁記憶體`;
+        this.connection = { url, authorization: `Basic ${this.toBasicAuth(username, password)}` };
+        this.writeStorage(localStorage, CONNECTION_STORAGE_KEYS.url, url);
+        this.writeStorage(localStorage, CONNECTION_STORAGE_KEYS.username, username);
+        this.writeStorage(sessionStorage, CONNECTION_STORAGE_KEYS.password, password);
+        this.setStatus('connection-status', '查詢設定已套用', 'success');
+        document.getElementById('connection-details').textContent = `Host：${parsed.host}｜只允許查詢｜credentials 不執行 mutation`;
     }
 
     clearConnectionSettings() {
         this.connection = null;
-        this.clearStoredConnectionFields();
-        document.getElementById('opensearch-url').value = '';
-        document.getElementById('opensearch-username').value = '';
-        document.getElementById('opensearch-password').value = '';
-        document.getElementById('connection-status').textContent = '尚未套用設定';
-        document.getElementById('connection-status').className = 'connection-status';
+        this.writeStorage(localStorage, CONNECTION_STORAGE_KEYS.url, '');
+        this.writeStorage(localStorage, CONNECTION_STORAGE_KEYS.username, '');
+        this.writeStorage(sessionStorage, CONNECTION_STORAGE_KEYS.password, '');
+        ['opensearch-url', 'opensearch-username', 'opensearch-password'].forEach((id) => { document.getElementById(id).value = ''; });
+        this.setStatus('connection-status', '尚未套用設定');
         document.getElementById('connection-details').textContent = '尚未提供連線設定';
         this.resetSearchState();
-        this.showToast('本頁記憶體中的 OpenSearch 連線設定已清除。', 'success');
+        this.showToast('OpenSearch 查詢設定已清除。', 'success');
     }
 
-    async applyJiraConnectionSettings() {
-        const url = document.getElementById('jira-url').value.trim().replace(/\/$/, '');
-        const username = document.getElementById('jira-username').value.trim();
-        const token = document.getElementById('jira-api-token').value;
-        let parsed;
+    async applyAwsCredentials() {
+        const text = document.getElementById('aws-credentials').value;
         try {
-            parsed = new URL(url);
-            if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) {
-                throw new Error('invalid endpoint');
-            }
-        } catch {
-            this.showToast('請輸入不含帳密、查詢參數或 hash 的 HTTPS Jira URL。', 'error');
-            return;
+            this.awsCredentials = this.parseAwsCredentials(text);
+        const sts = new STSClient({ region: AWS_REGION, credentials: this.awsCredentials });
+            const identity = await sts.send(new GetCallerIdentityCommand({}));
+            this.awsIdentity = identity;
+            const arn = identity.Arn || '';
+            document.getElementById('aws-details').textContent = `Account：${identity.Account || 'unknown'}｜Arn：${arn}｜credentials 僅存在本頁記憶體`;
+            this.setStatus('aws-status', 'AWS 身份已驗證', 'success');
+            document.getElementById('aws-credentials').value = '';
+            this.showToast('AWS 身份驗證成功，可以直接 Invoke Lambda。', 'success');
+        } catch (error) {
+            this.awsCredentials = null;
+            this.awsIdentity = null;
+            this.setStatus('aws-status', '驗證失敗', 'error');
+            document.getElementById('aws-details').textContent = this.describeAwsError(error);
+            this.showToast(this.describeAwsError(error), 'error');
         }
-        if (!username || !token) {
-            this.showToast('Jira 直接刪除需要帳號與 API token。', 'error');
-            return;
-        }
-        this.jiraConnection = { url, username, authorization: `Basic ${this.toBasicAuth(username, token)}` };
-        // Clear the token input immediately. The encoded authorization remains only in memory.
-        document.getElementById('jira-api-token').value = '';
-        document.getElementById('jira-connection-status').textContent = '已套用（記憶體）';
-        document.getElementById('jira-connection-status').className = 'connection-status is-success';
-        document.getElementById('jira-connection-details').textContent = `Host：${parsed.host}｜帳號：已輸入｜API token：只存在本頁記憶體，不會保存`;
-        this.showToast('Jira 設定已套用；尚未執行任何刪除。', 'success');
     }
 
-    clearJiraConnectionSettings() {
-        this.jiraConnection = null;
-        document.getElementById('jira-url').value = '';
-        document.getElementById('jira-username').value = '';
-        document.getElementById('jira-api-token').value = '';
-        document.getElementById('jira-connection-status').textContent = '未設定';
-        document.getElementById('jira-connection-status').className = 'connection-status';
-        document.getElementById('jira-connection-details').textContent = '尚未提供 Jira credentials；沒有 Jira key 的候選不需要此設定。';
-        this.showToast('Jira credentials 已從本頁記憶體清除。', 'success');
+    parseAwsCredentials(text) {
+        const read = (name) => {
+            const match = String(text || '').match(new RegExp(`^\\s*${name}\\s*=\\s*(.+?)\\s*$`, 'mi'));
+            return match ? match[1].trim() : '';
+        };
+        const credentials = {
+            accessKeyId: read('aws_access_key_id'),
+            secretAccessKey: read('aws_secret_access_key'),
+            sessionToken: read('aws_session_token'),
+        };
+        if (!credentials.accessKeyId || !credentials.secretAccessKey || !credentials.sessionToken) {
+            throw new Error('AWS credentials 必須包含 aws_access_key_id、aws_secret_access_key、aws_session_token。');
+        }
+        return credentials;
     }
 
-    setConnectedState(message, type = '') {
-        const status = document.getElementById('connection-status');
-        status.textContent = message;
-        status.className = `connection-status ${type ? `is-${type}` : ''}`;
+    clearAwsCredentials() {
+        this.awsCredentials = null;
+        this.awsIdentity = null;
+        document.getElementById('aws-credentials').value = '';
+        this.setStatus('aws-status', '未設定');
+        document.getElementById('aws-details').textContent = 'AWS credentials 已從本頁記憶體清除。';
+        this.showToast('AWS credentials 已清除。', 'success');
+    }
+
+    describeAwsError(error) {
+        return `AWS SDK：${error?.name || 'Error'}：${error?.message || '身份驗證失敗'}；請確認 temporary credentials 尚未過期，且允許 sts:GetCallerIdentity。`;
+    }
+
+    setStatus(id, message, type = '') {
+        const element = document.getElementById(id);
+        element.textContent = message;
+        element.className = `connection-status ${type ? `is-${type}` : ''}`;
     }
 
     toBasicAuth(username, password) {
@@ -191,77 +177,58 @@ class MergePage {
     }
 
     encodeIndex(index) { return encodeURIComponent(index).replace(/%2A/gi, '*').replace(/%2C/gi, ','); }
-    encodeId(id) { return encodeURIComponent(id); }
 
     async openSearchRequest(path, options = {}) {
-        if (!this.connection) throw new Error('尚未設定 OpenSearch 連線');
-        const headers = {
-            Accept: 'application/json',
-            Authorization: `Basic ${this.connection.authorization}`,
-        };
+        if (!this.connection) throw new Error('尚未設定 OpenSearch 查詢連線');
+        const headers = { Accept: 'application/json', Authorization: this.connection.authorization };
         if (options.body) headers['Content-Type'] = 'application/json';
         let response;
         try {
             response = await fetch(`${this.connection.url}${path}`, { ...options, headers, credentials: 'omit' });
         } catch (error) {
-            throw new Error(`無法連線 OpenSearch。請檢查 TLS 憑證、CORS 與網路設定（${error.message}）。`);
+            throw new Error(`無法連線 OpenSearch（${error.message}）；請檢查 TLS、CORS 與網路。`);
         }
-        const text = await response.text();
-        let payload = {};
-        try { payload = text ? JSON.parse(text) : {}; } catch { payload = {}; }
-        if (!response.ok) {
-            const reason = payload.error?.reason || payload.message || `HTTP ${response.status}`;
-            throw new Error(`OpenSearch ${response.status}: ${reason}`);
+        return this.parseResponse(response, 'OpenSearch');
+    }
+
+    async invokeMergeLambda(source, targets) {
+        if (!this.awsCredentials) throw new Error('尚未驗證 AWS credentials。');
+        const lambda = new LambdaClient({ region: AWS_REGION, credentials: this.awsCredentials });
+        const command = new InvokeCommand({
+            FunctionName: LAMBDA_FUNCTION_NAME,
+            InvocationType: 'RequestResponse',
+            Payload: new TextEncoder().encode(JSON.stringify({ task: 'merge_jira', source, target: targets })),
+        });
+        let response;
+        try {
+            response = await lambda.send(command);
+        } catch (error) {
+            throw new Error(`AWS Lambda Invoke 失敗：${error.name || 'Error'}：${error.message || 'unknown error'}`);
+        }
+        const payloadText = response.Payload ? new TextDecoder().decode(response.Payload) : '{}';
+        let payload;
+        try { payload = payloadText ? JSON.parse(payloadText) : {}; } catch { payload = { raw: payloadText }; }
+        if (response.FunctionError) {
+            throw new Error(`Lambda execution error：${payload.errorMessage || payload.error || JSON.stringify(payload)}`);
+        }
+        if (payload.body && typeof payload.body === 'string') {
+            try { return JSON.parse(payload.body); } catch { return payload; }
         }
         return payload;
     }
 
-    async openJiraRequest(path, options = {}) {
-        if (!this.jiraConnection) throw new Error('尚未設定 Jira credentials；請先套用 Jira 設定。');
-        const headers = {
-            Accept: 'application/json',
-            Authorization: this.jiraConnection.authorization,
-        };
-        if (options.body) headers['Content-Type'] = 'application/json';
-        let response;
-        try {
-            response = await fetch(`${this.jiraConnection.url}${path}`, { ...options, headers, credentials: 'omit' });
-        } catch (error) {
-            throw new Error(`無法連線 Jira。請檢查 Jira CORS、TLS 與網路設定（${error.message}）。`);
-        }
+    async parseResponse(response, service) {
         const text = await response.text();
         let payload = {};
-        try { payload = text ? JSON.parse(text) : {}; } catch { payload = {}; }
+        try { payload = text ? JSON.parse(text) : {}; } catch { payload = { raw: text }; }
         if (!response.ok) {
-            const reason = payload.errorMessages?.join('; ') || payload.message || `HTTP ${response.status}`;
-            throw new Error(`Jira ${response.status}: ${reason}`);
+            throw new Error(`${service} ${response.status}: ${payload.error || payload.message || payload.body || text || 'request failed'}`);
         }
-        return { response, payload };
-    }
-
-    async verifyJiraIssue(key) {
-        if (!JIRA_KEY_PATTERN.test(key)) throw new Error(`無效的 Jira key：${key}`);
-        const { payload } = await this.openJiraRequest(`/rest/api/3/issue/${encodeURIComponent(key)}?fields=summary,status,project`, { method: 'GET' });
-        const fields = payload.fields || {};
-        return { key: payload.key || key, summary: fields.summary || '', status: fields.status?.name || '', project: fields.project?.key || '' };
-    }
-
-    async deleteAndVerifyJiraIssue(sourceKey, targetKey) {
-        if (!this.jiraConnection) throw new Error(`候選 ${sourceKey} 有 Jira key，但尚未設定 Jira credentials。`);
-        if (sourceKey === targetKey) throw new Error('source Jira 與 target Jira 不可相同。');
-        await this.verifyJiraIssue(targetKey);
-        await this.verifyJiraIssue(sourceKey);
-        await this.openJiraRequest(`/rest/api/3/issue/${encodeURIComponent(sourceKey)}`, { method: 'DELETE' });
-        try {
-            await this.verifyJiraIssue(sourceKey);
-        } catch (error) {
-            if (/Jira 404/.test(error.message)) return { verified: true };
-            throw new Error(`Jira source 已送出刪除，但無法確認是否刪除完成：${error.message}`);
+        if (payload.body && typeof payload.body === 'string') {
+            try { return JSON.parse(payload.body); } catch { return payload; }
         }
-        throw new Error(`Jira source ${sourceKey} 刪除請求完成，但 issue 仍存在；已停止清理 OpenSearch embedding。`);
+        return payload;
     }
-
-    // --- Target lookup + similarity search ---
 
     resetSearchState() {
         this.target = null;
@@ -274,32 +241,23 @@ class MergePage {
     }
 
     async searchSimilarCandidates() {
-        if (!this.connection) {
-            this.showToast('請先套用 OpenSearch 連線設定。', 'error');
-            return;
-        }
+        if (!this.connection) return this.showToast('請先套用 OpenSearch 查詢設定。', 'error');
         const rawKey = document.getElementById('target-key').value.trim();
-        if (!/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(rawKey)) {
-            this.showToast('請輸入有效的 Jira key，例如 VEL-2148。', 'error');
-            return;
-        }
+        if (!JIRA_KEY_PATTERN.test(rawKey)) return this.showToast('請輸入有效的 Jira key，例如 VEL-2176。', 'error');
         this.resetSearchState();
         document.getElementById('target-summary').classList.remove('hidden');
-        document.getElementById('target-summary').innerHTML = '<p class="loading-state">正在查詢目標 Jira issue...</p>';
+        document.getElementById('target-summary').innerHTML = '<p class="loading-state">正在查詢保留的 Jira embedding...</p>';
         try {
-            const target = await this.fetchTargetIssue(rawKey);
-            this.target = target;
-            this.renderTargetSummary(target);
-
+            this.target = await this.fetchTargetIssue(rawKey);
+            this.renderTargetSummary(this.target);
             document.getElementById('candidate-section').classList.remove('hidden');
-            document.getElementById('candidate-list').innerHTML = '<p class="loading-state">正在搜尋相似候選...</p>';
-            const candidates = await this.fetchSimilarCandidates(target);
-            this.candidates = candidates;
+            document.getElementById('candidate-list').innerHTML = '<p class="loading-state">正在搜尋相似 candidates...</p>';
+            this.candidates = await this.fetchSimilarCandidates(this.target);
             await this.attachAffectedLogCounts(this.candidates);
             this.renderCandidateList();
         } catch (error) {
             console.error('Merge search failed:', error);
-            document.getElementById('target-summary').innerHTML = `<div class="error-state">${this.escape(this.describeConnectionError(error))}</div>`;
+            document.getElementById('target-summary').innerHTML = `<div class="error-state">${this.escape(error.message)}</div>`;
             document.getElementById('candidate-section').classList.add('hidden');
         }
     }
@@ -307,381 +265,126 @@ class MergePage {
     async fetchTargetIssue(key) {
         const payload = await this.openSearchRequest(`/${CANDIDATE_INDEX}/_search`, {
             method: 'POST',
-            body: JSON.stringify({
-                size: 50,
-                _source: ['key', 'summary', 'error_message', 'error_type', 'site', 'log_group', 'status', 'embedding'],
-                query: {
-                    bool: {
-                        should: [{ term: { 'key.keyword': key } }, { term: { key } }],
-                        minimum_should_match: 1,
-                    },
-                },
-            }),
+            body: JSON.stringify({ size: 50, _source: ['key', 'summary', 'error_message', 'error_type', 'site', 'log_group', 'status', 'embedding'], query: { bool: { should: [{ term: { 'key.keyword': key } }, { term: { key } }], minimum_should_match: 1 } } }),
         });
-        const hits = payload.hits?.hits || [];
-        const hit = hits.length === 1 ? hits[0] : null;
-        if (!hit) throw new Error(`找不到唯一 Jira ${key} 對應的 embedding document。`);
-        const source = hit._source || {};
-        if (!Array.isArray(source.embedding) || !source.embedding.length) {
-            throw new Error(`Jira ${key} 對應的 embedding document 沒有向量資料，無法搜尋相似候選。`);
-        }
-        if (!source.site || !source.log_group) {
-            throw new Error(`Jira ${key} 對應的 embedding document 缺少 site 或 log group，無法安全限定合併範圍。`);
-        }
-        return { ...source, document_id: hit._id, index: hit._index };
+        const hits = (payload.hits?.hits || []).filter((hit) => hit._source?.key === key);
+        if (hits.length !== 1) throw new Error(`找不到唯一 Jira ${key} 對應的 embedding document。`);
+        const source = hits[0]._source || {};
+        if (!Array.isArray(source.embedding) || !source.embedding.length) throw new Error(`Jira ${key} 缺少 embedding vector。`);
+        return { ...source, document_id: hits[0]._id, index: hits[0]._index };
     }
 
     async fetchSimilarCandidates(target) {
-        const body = {
-            size: CANDIDATE_POOL_SIZE,
-            _source: ['key', 'summary', 'error_message', 'error_type', 'traceback', 'site', 'log_group', 'status', 'jira_creation_status'],
-            query: { knn: { embedding: { vector: target.embedding, k: CANDIDATE_POOL_SIZE } } },
-            post_filter: {
-                bool: {
-                    must: [{ term: { site: target.site } }, { term: { log_group: target.log_group } }],
-                    must_not: [{ term: { status: 'SUB ISSUES' } }],
-                },
-            },
-        };
         const payload = await this.openSearchRequest(`/${CANDIDATE_INDEX}/_search`, {
             method: 'POST',
-            body: JSON.stringify(body),
+            body: JSON.stringify({
+                size: CANDIDATE_POOL_SIZE,
+                _source: ['key', 'summary', 'error_message', 'error_type', 'traceback', 'site', 'log_group', 'status'],
+                query: { knn: { embedding: { vector: target.embedding, k: CANDIDATE_POOL_SIZE } } },
+                post_filter: { bool: { must: [{ term: { site: target.site } }, { term: { log_group: target.log_group } }], must_not: [{ term: { status: 'SUB ISSUES' } }] } },
+            }),
         });
-        const hits = payload.hits?.hits || [];
-        return hits
-            .filter((hit) => hit._id !== target.document_id)
-            .map((hit) => ({
-                score: hit._score,
-                similarity: Number.isFinite(hit._score) ? hit._score - 1 : null,
-                ...(hit._source || {}),
-                document_id: hit._id,
-                index: hit._index,
-            }))
-            .slice(0, SUGGESTION_LIMIT);
+        return (payload.hits?.hits || []).filter((hit) => hit._id !== target.document_id && JIRA_KEY_PATTERN.test(hit._source?.key || '')).map((hit) => ({
+            score: hit._score, similarity: Number.isFinite(hit._score) ? hit._score - 1 : null, ...(hit._source || {}), document_id: hit._id, index: hit._index,
+        })).slice(0, SUGGESTION_LIMIT);
     }
 
     async attachAffectedLogCounts(candidates) {
         await Promise.all(candidates.map(async (candidate) => {
             try {
-                const payload = await this.openSearchRequest(`/${this.encodeIndex(ERROR_INDEXES)}/_search`, {
-                    method: 'POST',
-                    body: JSON.stringify({
-                        size: 0,
-                        query: { term: { 'jira_reference.keyword': candidate.document_id } },
-                    }),
-                });
+                const payload = await this.openSearchRequest(`/${this.encodeIndex(ERROR_INDEXES)}/_search`, { method: 'POST', body: JSON.stringify({ size: 0, query: { term: { 'jira_reference.keyword': candidate.document_id } } }) });
                 candidate.affectedLogCount = payload.hits?.total?.value ?? 0;
             } catch (error) {
-                console.warn('Failed to count affected logs for candidate', candidate.document_id, error);
                 candidate.affectedLogCount = null;
+                console.warn('Failed to count affected logs', candidate.document_id, error);
             }
         }));
     }
 
-    // --- Manual candidate addition (for candidates the kNN search didn't surface,
-    // e.g. different log_group naming for what is actually the same service) ---
-
     async addManualCandidate() {
-        if (!this.target) {
-            this.showToast('請先搜尋目標 Jira issue。', 'error');
-            return;
-        }
-        const rawKey = document.getElementById('manual-add-key').value.trim();
-        if (!/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(rawKey)) {
-            this.showToast('請輸入有效的 Jira key，例如 VEL-1888。', 'error');
-            return;
-        }
-        if (rawKey === this.target.key) {
-            this.showToast('不能把目標 issue 自己加入候選清單。', 'error');
-            return;
-        }
-        if (this.candidates.some((c) => c.key === rawKey)) {
-            this.showToast(`${rawKey} 已經在候選清單中。`, 'error');
-            return;
-        }
-        const addBtn = document.getElementById('manual-add-btn');
-        addBtn.disabled = true;
+        if (!this.target) return this.showToast('請先搜尋 source Jira。', 'error');
+        const key = document.getElementById('manual-add-key').value.trim();
+        if (!JIRA_KEY_PATTERN.test(key)) return this.showToast('請輸入有效的 Jira key。', 'error');
+        if (key === this.target.key || this.candidates.some((candidate) => candidate.key === key)) return this.showToast('此 Jira key 已是 source 或 candidate。', 'error');
+        const button = document.getElementById('manual-add-btn');
+        button.disabled = true;
         try {
-            const payload = await this.openSearchRequest(`/${CANDIDATE_INDEX}/_search`, {
-                method: 'POST',
-                body: JSON.stringify({
-                    size: 1,
-                    _source: ['key', 'summary', 'error_message', 'error_type', 'traceback', 'site', 'log_group', 'status'],
-                    query: { bool: { should: [{ term: { 'key.keyword': rawKey } }, { term: { key: rawKey } }], minimum_should_match: 1 } },
-                }),
-            });
-            const hit = payload.hits?.hits?.[0];
-            if (!hit) {
-                this.showToast(`找不到 Jira ${rawKey} 對應的 embedding document。`, 'error');
-                return;
-            }
-            const candidate = {
-                score: null,
-                similarity: null,
-                manuallyAdded: true,
-                ...(hit._source || {}),
-                document_id: hit._id,
-                index: hit._index,
-            };
-            const siteMismatch = candidate.site && this.target.site && candidate.site !== this.target.site;
-            const logGroupMismatch = candidate.log_group && this.target.log_group && candidate.log_group !== this.target.log_group;
-            if (siteMismatch || logGroupMismatch) {
-                candidate.manualMismatchWarning = [
-                    siteMismatch ? `site 不同（候選：${candidate.site}，目標：${this.target.site}）` : null,
-                    logGroupMismatch ? `log group 不同（候選：${candidate.log_group}，目標：${this.target.log_group}）` : null,
-                ].filter(Boolean).join('；');
-            }
+            const payload = await this.openSearchRequest(`/${CANDIDATE_INDEX}/_search`, { method: 'POST', body: JSON.stringify({ size: 1, _source: ['key', 'summary', 'error_message', 'error_type', 'traceback', 'site', 'log_group', 'status'], query: { bool: { should: [{ term: { 'key.keyword': key } }, { term: { key } }], minimum_should_match: 1 } } }) });
+            const hit = payload.hits?.hits?.find((item) => item._source?.key === key);
+            if (!hit) throw new Error(`找不到 Jira ${key} 對應的 embedding document。`);
+            const candidate = { ...(hit._source || {}), document_id: hit._id, index: hit._index, manuallyAdded: true, score: null, similarity: null };
             await this.attachAffectedLogCounts([candidate]);
             this.candidates = [candidate, ...this.candidates];
-            this.renderCandidateList();
             document.getElementById('manual-add-key').value = '';
-            this.showToast(`已加入 ${rawKey}，請確認 site/log group 後再勾選。`, 'success');
+            this.renderCandidateList();
         } catch (error) {
-            console.error('Failed to add manual candidate:', error);
-            this.showToast(this.describeConnectionError(error), 'error');
+            this.showToast(error.message, 'error');
         } finally {
-            addBtn.disabled = false;
+            button.disabled = false;
         }
     }
 
-    // --- Rendering ---
-
     renderTargetSummary(target) {
-        document.getElementById('target-summary').innerHTML = `
-            <div class="target-summary-card">
-                <div><strong>${this.escape(target.key)}</strong><span class="badge badge-${this.escape((target.site || 'unknown').toLowerCase())}">${this.escape((target.site || '').toUpperCase())}</span></div>
-                <p>${this.escape(target.summary || '未提供 summary')}</p>
-                <p class="target-summary-meta">Log group：${this.escape(target.log_group || '未提供')}　Status：${this.escape(target.status || '未提供')}</p>
-            </div>`;
+        document.getElementById('target-summary').innerHTML = `<div class="target-summary-card"><div><strong>${this.escape(target.key)}</strong><span class="badge badge-${this.escape((target.site || 'unknown').toLowerCase())}">${this.escape((target.site || '').toUpperCase())}</span></div><p>${this.escape(target.summary || '未提供 summary')}</p><p class="target-summary-meta">doc_id：${this.escape(target.document_id)}　Log group：${this.escape(target.log_group || '未提供')}</p></div>`;
     }
 
     renderCandidateList() {
-        const listEl = document.getElementById('candidate-list');
-        const manualCount = this.candidates.filter((c) => c.manuallyAdded).length;
-        const autoCount = this.candidates.length - manualCount;
-        document.getElementById('candidate-count').textContent = `找到 ${autoCount} 筆相似候選（site + log group 與目標一致）${manualCount ? `，另手動加入 ${manualCount} 筆` : ''}`;
+        const list = document.getElementById('candidate-list');
+        document.getElementById('candidate-count').textContent = `找到 ${this.candidates.length} 筆 candidate`;
         if (!this.candidates.length) {
-            listEl.innerHTML = '<p class="empty-state">沒有找到符合條件的相似候選。</p>';
+            list.innerHTML = '<p class="empty-state">沒有找到符合條件的 candidate。</p>';
             this.updateSubmitButtonState();
             return;
         }
-        listEl.innerHTML = this.candidates.map((candidate, index) => {
-            const hasKey = Boolean(candidate.key);
-            const similarityText = Number.isFinite(candidate.similarity) ? `${(candidate.similarity * 100).toFixed(2)}%` : '手動加入';
-            const countText = candidate.affectedLogCount === null ? '（查詢失敗）' : `${candidate.affectedLogCount} 筆`;
-            const keyNote = hasKey
-                ? `<span class="candidate-keyed-note">⚠ 已對應真實 Jira ${this.escape(candidate.key)}：若已設定 Jira credentials，提交時會先把 error log 指向目標，再刪除 Jira source issue，最後清理 embedding。若未設定 Jira credentials，系統會拒絕此候選，避免只刪除 OpenSearch 紀錄。</span>`
-                : '';
-            const mismatchNote = candidate.manualMismatchWarning
-                ? `<span class="candidate-mismatch-note">⚠ 手動加入的候選與目標不完全一致：${this.escape(candidate.manualMismatchWarning)}。請確認這確實是同一個根因才合併。</span>`
-                : '';
-            return `
-                <label class="candidate-merge-item">
-                    <input type="checkbox" data-candidate-checkbox data-index="${index}">
-                    <div class="candidate-merge-body">
-                        <div class="candidate-merge-top">
-                            <span class="badge badge-similarity">${candidate.manuallyAdded ? '手動加入' : `相似度 ${similarityText}`}</span>
-                            <span class="candidate-merge-count">影響 error log：${countText}</span>
-                            ${hasKey ? `<span class="badge badge-warning">key: ${this.escape(candidate.key)}</span>` : '<span class="badge badge-muted">無 key</span>'}
-                        </div>
-                        <p class="candidate-merge-summary">${this.escape(candidate.summary || candidate.error_message || '未提供 summary')}</p>
-                        <p class="candidate-merge-meta">doc_id：${this.escape(candidate.document_id)}</p>
-                        ${keyNote}
-                        ${mismatchNote}
-                    </div>
-                </label>`;
+        list.innerHTML = this.candidates.map((candidate, index) => {
+            const similarity = Number.isFinite(candidate.similarity) ? `${(candidate.similarity * 100).toFixed(2)}%` : '手動加入';
+            const count = candidate.affectedLogCount === null ? '查詢失敗' : `${candidate.affectedLogCount} 筆`;
+            return `<label class="candidate-merge-item"><input type="checkbox" data-candidate-checkbox data-index="${index}"><div class="candidate-merge-body"><div class="candidate-merge-top"><span class="badge badge-similarity">${candidate.manuallyAdded ? '手動加入' : `相似度 ${similarity}`}</span><span class="candidate-merge-count">影響 error log：${count}</span><span class="badge badge-warning">刪除 Jira ${this.escape(candidate.key || '無 key')}</span></div><p class="candidate-merge-summary">${this.escape(candidate.summary || candidate.error_message || '未提供 summary')}</p><p class="candidate-merge-meta">doc_id：${this.escape(candidate.document_id)}　site：${this.escape(candidate.site || '')}　log_group：${this.escape(candidate.log_group || '')}</p></div></label>`;
         }).join('');
         this.updateSubmitButtonState();
     }
 
     updateSubmitButtonState() {
-        const checked = this.getSelectedCandidates();
-        document.getElementById('submit-merge-btn').disabled = checked.length === 0;
+        document.getElementById('submit-merge-btn').disabled = !this.getSelectedCandidates().length;
     }
 
     getSelectedCandidates() {
-        const boxes = document.querySelectorAll('#candidate-list [data-candidate-checkbox]:checked');
-        return [...boxes].map((box) => this.candidates[Number(box.dataset.index)]).filter(Boolean);
+        return [...document.querySelectorAll('#candidate-list [data-candidate-checkbox]:checked')].map((box) => this.candidates[Number(box.dataset.index)]).filter(Boolean);
     }
-
-    // --- Confirm + submit ---
 
     openConfirmModal() {
         const selected = this.getSelectedCandidates();
         if (!selected.length) return;
-        const totalLogs = selected.reduce((sum, c) => sum + (c.affectedLogCount || 0), 0);
-        const keyedSelected = selected.filter((c) => c.key);
-        const reason = document.getElementById('merge-reason').value.trim();
-        document.getElementById('confirm-modal-body').innerHTML = `
-            <p>即將把 <strong>${selected.length}</strong> 個候選合併到 <strong>${this.escape(this.target.key)}</strong>：</p>
-            <ul class="confirm-candidate-list">
-                ${selected.map((c) => `<li>${this.escape(c.document_id)}${c.key ? ` (${this.escape(c.key)})` : ''}（${c.affectedLogCount ?? '?'} 筆 log）</li>`).join('')}
-            </ul>
-            <p>總計影響 <strong>${totalLogs}</strong> 筆 error log 的 jira_reference，並清理上述 ${selected.length} 個候選 embedding 文件。</p>
-            ${keyedSelected.length ? `<p class="confirm-keyed-warning">⚠ 其中 ${keyedSelected.length} 個候選（${keyedSelected.map((c) => this.escape(c.key)).join(', ')}）會進一步呼叫 Jira DELETE，永久刪除 source issue。目標 ${this.escape(this.target.key)} 不會被刪除。${this.jiraConnection ? '' : '目前尚未設定 Jira credentials，因此這些 keyed candidate 會被拒絕。'}</p>` : ''}
-            <p>合併理由：${this.escape(reason || '（尚未填寫；若沒有 keyed candidate 可留白）')}</p>`;
+        if (!this.awsCredentials) return this.showToast('請先貼上並驗證 AWS temporary credentials。', 'error');
+        document.getElementById('confirm-modal-body').innerHTML = `<p>保留 source：<strong>${this.escape(this.target.key)}</strong></p><p>送給 Lambda 刪除的 targets：</p><ul class="confirm-candidate-list">${selected.map((candidate) => `<li>${this.escape(candidate.key)}（doc_id：${this.escape(candidate.document_id)}，${candidate.affectedLogCount ?? '?'} 筆 log）</li>`).join('')}</ul><p>Lambda event：<code>{"task":"merge_jira","source":"${this.escape(this.target.key)}","target":[${selected.map((candidate) => `"${this.escape(candidate.key)}"`).join(',')}]}</code></p>`;
         document.getElementById('confirm-modal').classList.remove('hidden');
     }
 
-    closeConfirmModal() {
-        document.getElementById('confirm-modal').classList.add('hidden');
-    }
+    closeConfirmModal() { document.getElementById('confirm-modal').classList.add('hidden'); }
 
     async submitMerge() {
         const selected = this.getSelectedCandidates();
         this.closeConfirmModal();
-        if (!selected.length) return;
-        const reason = document.getElementById('merge-reason').value.trim();
-        if (selected.some((candidate) => candidate.key) && reason.length < 5) {
-            this.showToast('選取了有 Jira key 的候選，請先填寫至少 5 個字元的合併理由。', 'error');
-            return;
-        }
-        if (selected.some((candidate) => candidate.key) && !this.jiraConnection) {
-            this.showToast('選取了有 Jira key 的候選，請先套用 Jira credentials。', 'error');
-            return;
-        }
+        if (!selected.length || !this.awsCredentials) return;
         document.getElementById('submit-merge-btn').disabled = true;
         const resultEl = document.getElementById('merge-result');
         resultEl.classList.remove('hidden');
-        resultEl.innerHTML = '<p class="loading-state">正在執行合併...</p>';
-
-        const results = [];
-        for (const candidate of selected) {
-            try {
-                const mergeResult = await this.mergeOneCandidate(candidate);
-                results.push({ candidate, ok: true, ...mergeResult });
-            } catch (error) {
-                console.error('Failed to merge candidate', candidate.document_id, error);
-                results.push({ candidate, ok: false, error: error.message });
-            }
-        }
-        this.renderMergeResult(results);
-        // Refresh candidate list/log counts so the UI reflects the new state
-        // (merged/deleted candidates disappear, counts update for the rest).
+        resultEl.innerHTML = '<p class="loading-state">正在呼叫 Merge Lambda；等待 Jira、OpenSearch 與 embedding 驗證結果...</p>';
         try {
-            const candidates = await this.fetchSimilarCandidates(this.target);
-            this.candidates = candidates;
-            await this.attachAffectedLogCounts(this.candidates);
-            this.renderCandidateList();
+            const result = await this.invokeMergeLambda(this.target.key, selected.map((candidate) => candidate.key));
+            this.renderLambdaResult(result);
         } catch (error) {
-            console.warn('Failed to refresh candidate list after merge:', error);
+            this.renderLambdaResult({ status: 'FAILED', errors: [{ error: error.message }] });
         }
     }
 
-    async mergeOneCandidate(candidate) {
-        if (candidate.document_id === this.target.document_id) {
-            throw new Error('候選與目標 issue 是同一個文件，已跳過。');
-        }
-        if (candidate.key && candidate.key === this.target.key) {
-            throw new Error('候選與目標 Jira key 相同，已拒絕刪除。');
-        }
-        // Re-read the candidate right before mutating it: the key/index shown in the UI
-        // may be stale by the time the user confirms the merge.
-        const fresh = await this.rereadCandidate(candidate.document_id);
-        if (!fresh) throw new Error('候選文件已不存在，可能已被其他人處理，請重新整理。');
-        if ((fresh.key || null) !== (candidate.key || null)) {
-            throw new Error(`候選的 key 已變更為 ${fresh.key || '(null)'}（畫面顯示為 ${candidate.key || '(null)'}），請重新整理後再試。`);
-        }
-        if (fresh.index !== candidate.index) {
-            throw new Error('候選所在索引與預期不符，已中止以避免誤刪。');
-        }
-
-        // Validate both Jira issues before changing OpenSearch. This avoids moving logs
-        // when credentials, CORS, permissions, or either key is already invalid.
-        if (candidate.key) {
-            await this.verifyJiraIssue(this.target.key);
-            await this.verifyJiraIssue(candidate.key);
-        }
-
-        const updateResult = await this.openSearchRequest(
-            // refresh=true forces the affected shards to refresh before this call
-            // returns, so the immediately-following verification search (and the
-            // UI's log-count refresh) see the update instead of racing OpenSearch's
-            // default ~1s refresh interval and finding stale "still referenced" hits.
-            `/${this.encodeIndex(ERROR_INDEXES)}/_update_by_query?conflicts=proceed&refresh=true`,
-            {
-                method: 'POST',
-                body: JSON.stringify({
-                    query: { term: { 'jira_reference.keyword': candidate.document_id } },
-                    script: {
-                        lang: 'painless',
-                        source: "ctx._source.jira_reference = params.target; ctx._source.association_status = 'MANUAL_MERGED';",
-                        params: { target: this.target.document_id },
-                    },
-                }),
-            },
-        );
-        const updatedCount = updateResult.updated ?? 0;
-
-        // Confirm no error log still references the candidate before deleting it;
-        // update_by_query can skip documents on version conflicts (conflicts=proceed).
-        const remaining = await this.openSearchRequest(`/${this.encodeIndex(ERROR_INDEXES)}/_search`, {
-            method: 'POST',
-            body: JSON.stringify({ size: 0, query: { term: { 'jira_reference.keyword': candidate.document_id } } }),
-        });
-        if ((remaining.hits?.total?.value ?? 0) > 0) {
-            throw new Error(`合併後仍有 ${remaining.hits.total.value} 筆 log 指向此候選（可能發生版本衝突），已停止刪除候選文件；請重新整理後再試一次。`);
-        }
-
-        // Jira deletion must succeed and be verified before the source embedding is removed.
-        let jira = null;
-        if (candidate.key) {
-            jira = await this.deleteAndVerifyJiraIssue(candidate.key, this.target.key);
-        }
-
-        await this.openSearchRequest(
-            `/${this.encodeIndex(fresh.index)}/_doc/${this.encodeId(candidate.document_id)}?if_seq_no=${encodeURIComponent(fresh.seqNo)}&if_primary_term=${encodeURIComponent(fresh.primaryTerm)}`,
-            { method: 'DELETE' },
-        );
-        return { updated: updatedCount, jira };
-    }
-
-    async rereadCandidate(docId) {
-        const payload = await this.openSearchRequest(`/${CANDIDATE_INDEX}/_search`, {
-            method: 'POST',
-            body: JSON.stringify({
-                size: 1,
-                seq_no_primary_term: true,
-                _source: ['key'],
-                query: { ids: { values: [docId] } },
-            }),
-        });
-        const hit = payload.hits?.hits?.[0];
-        if (!hit) return null;
-        return { key: hit._source?.key || null, index: hit._index, seqNo: hit._seq_no, primaryTerm: hit._primary_term };
-    }
-
-    renderMergeResult(results) {
+    renderLambdaResult(result) {
         const resultEl = document.getElementById('merge-result');
-        const okResults = results.filter((r) => r.ok);
-        const failResults = results.filter((r) => !r.ok);
-        const totalUpdated = okResults.reduce((sum, r) => sum + (r.updated || 0), 0);
-        const mergedKeys = okResults.filter((r) => r.candidate.key).map((r) => r.candidate.key);
-        const title = failResults.length ? '部分完成／有失敗' : '合併完成';
-        resultEl.innerHTML = `
-            <div class="merge-result-summary">
-                <strong>${title}</strong>
-                <p>成功合併 ${okResults.length} 個候選，共更新 ${totalUpdated} 筆 error log 並完成對應清理。${failResults.length ? `${failResults.length} 個候選失敗，請依錯誤處理。` : ''}</p>
-            </div>
-            ${okResults.length ? `<ul class="merge-result-list">${okResults.map((r) => `<li class="is-ok">✓ ${this.escape(r.candidate.document_id)}${r.candidate.key ? ` (${this.escape(r.candidate.key)})：Jira source 已驗證刪除` : ''}：更新 ${r.updated} 筆 log</li>`).join('')}</ul>` : ''}
-            ${failResults.length ? `<ul class="merge-result-list">${failResults.map((r) => `<li class="is-fail">✗ ${this.escape(r.candidate.document_id)}：${this.escape(r.error)}</li>`).join('')}</ul>` : ''}
-            ${mergedKeys.length ? `<p class="confirm-keyed-warning">已驗證刪除 Jira source：${mergedKeys.map((k) => this.escape(k)).join(', ')}；target ${this.escape(this.target.key)} 未被刪除。</p>` : ''}
-        `;
-        if (failResults.length) {
-            this.showToast(`${failResults.length} 個候選合併失敗，請查看結果清單。`, 'error');
-        } else {
-            this.showToast('合併完成。', 'success');
-        }
-    }
-
-    // --- Shared helpers ---
-
-    describeConnectionError(error) {
-        const message = error?.message || '未知錯誤';
-        if (/Failed to fetch|CORS|TLS|憑證|NetworkError/i.test(message)) {
-            return `${message}；瀏覽器直連需要 OpenSearch 允許此 GitHub Pages origin 的 CORS，且 TLS 憑證必須被瀏覽器信任。`;
-        }
-        return message;
+        const rows = (result.results || []).map((item) => `<li class="is-ok">✓ ${this.escape(item.duplicate_key)}：source_doc_id=${this.escape(item.source_doc_id)}；duplicate_doc_id=${this.escape(item.duplicate_doc_id)}；更新 ${item.references_updated ?? 0} 筆；remaining reference=${item.references_remaining ?? '?'}；Jira deleted=${item.jira_delete_verified_absent === true}；embedding deleted=${item.embedding_delete_verified_absent === true}</li>`).join('');
+        const errors = (result.errors || []).map((item) => `<li class="is-fail">✗ ${this.escape(item.target || '')}：${this.escape(item.error || 'unknown error')}</li>`).join('');
+        resultEl.innerHTML = `<div class="merge-result-summary"><strong>Merge Lambda：${this.escape(result.status || 'UNKNOWN')}</strong><p>source：${this.escape(result.source || this.target?.key || '')}；embedding index：${this.escape(result.embedding_index || CANDIDATE_INDEX)}</p><p>下列紀錄由 Lambda 回傳，包含 doc id、reference 更新、Jira deletion 與 embedding deletion 驗證。</p></div>${rows ? `<ul class="merge-result-list">${rows}</ul>` : ''}${errors ? `<ul class="merge-result-list">${errors}</ul>` : ''}<details><summary>Lambda execution result / log</summary><pre>${this.escape(JSON.stringify(result, null, 2))}</pre></details>`;
+        this.setStatus('aws-status', `最近執行：${result.status || 'UNKNOWN'}`, result.status === 'COMPLETED' ? 'success' : 'error');
+        this.showToast(result.status === 'COMPLETED' ? 'Merge Lambda 執行完成。' : 'Merge Lambda 執行失敗或部分完成，請查看說明區。', result.status === 'COMPLETED' ? 'success' : 'error');
     }
 
     showToast(message, type = '') {
@@ -690,13 +393,11 @@ class MergePage {
         toast.className = `toast ${type ? `is-${type}` : ''}`;
         toast.classList.remove('hidden');
         clearTimeout(this._toastTimer);
-        this._toastTimer = setTimeout(() => toast.classList.add('hidden'), 4000);
+        this._toastTimer = setTimeout(() => toast.classList.add('hidden'), 5000);
     }
 
     escape(value) {
-        return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
-            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-        }[ch]));
+        return String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
     }
 }
 

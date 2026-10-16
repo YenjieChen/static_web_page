@@ -6,10 +6,9 @@ AI 判定需要建立 Jira 後，Jira 可以直接建立，不需要人工 appro
 
 目前頁面：
 
-- `merge.html` / `merge.js` 可搜尋相似 embedding candidate。
-- 可將 error logs 指向目標 embedding document。
-- 對已經有 Jira key 的 candidate，目前只會提醒 reviewer 到 Jira Cloud 手動關閉或標記 duplicate。
-- static page 直接寫 OpenSearch，沒有可信的 server-side reviewer identity 或集中 audit trail。
+- `merge.html` / `merge.js` 只直接查詢 OpenSearch，並呼叫受控的 `merge_jira` Lambda。
+- Lambda 由後端 credentials 執行 error-log reference 搬移、Jira duplicate comment/delete 與 embedding deletion/verification。
+- 前端不保存 Jira token，不直接呼叫 Jira API，也不直接執行 OpenSearch mutation。
 
 ## 實作 TODO
 
@@ -20,16 +19,16 @@ AI 判定需要建立 Jira 後，Jira 可以直接建立，不需要人工 appro
 - [ ] request 必須攜帶 source/target embedding 與所有 affected error-log 的 `_seq_no` / `_primary_term` snapshot。
 - [ ] 禁止把 Jira project id/key 從 browser request 傳入覆寫受控設定；Jira project 由 backend configuration 決定。
 
-## 已完成的純前端範圍
+## 已完成的 Lambda merge 範圍
 
-- [x] 純前端 Jira credentials 輸入與 memory-only lifecycle。
-- [x] keyed source Jira 先驗證、DELETE、再驗證不存在。
-- [x] Jira deletion failure 時保留 source embedding 並在 UI 顯示 partial failure。
-- [ ] 若需要可信 reviewer identity、集中 audit、CAS rollback 或 reconciliation，仍需改成 backend merge endpoint。
+- [x] Lambda 支援 `task=merge_jira`、`source` 與 `target[]`。
+- [x] Lambda 找出 source/duplicate embedding doc id。
+- [x] Lambda 搬移 error-log `jira_reference` 並驗證 duplicate reference 為 0。
+- [x] Lambda 在 Jira duplicate 加註重複原因、刪除 Jira 並驗證 404。
+- [x] Lambda 刪除 duplicate embedding 並驗證 `_id` 不存在，且不再出現在 error logs。
+- [x] 前端只保留 OpenSearch 查詢、AWS SDK v3 Lambda Invoke 與 result/log 顯示。
+- [x] 前端提供 temporary AWS credentials 文字區，STS 驗證實際 account/role 後才允許 Invoke Lambda。
 
-## 仍需 backend 才能提供的能力
-
-- [ ] 不讓 browser 直接執行完整 merge mutation；由 backend 驗證 reviewer identity、權限與 request fingerprint。
 - [ ] 先 dry-run/read-back，再以 CAS 更新所有 affected error logs。
 - [ ] source Jira 已存在時，使用 Jira Cloud API 將 source 標記為 duplicate / closed，並留下指向 target 的 comment 或 link。
 - [ ] target Jira 不可被刪除或覆寫；source 與 target 相同時拒絕。
@@ -61,5 +60,5 @@ AI 判定需要建立 Jira 後，Jira 可以直接建立，不需要人工 appro
 ## 非目標
 
 - 不把 post-create merge 變成 AI Jira creation 的 approval gate。
-- 不在 static page 內保存 Jira credentials。
+- 不在 static page 持久保存 AWS credentials；temporary credentials 只存在 JavaScript memory。
 - 不使用 `JIRA_PROJECT_ID` 取代受控的 `JIRA_PROJECT_KEY=VEL`。

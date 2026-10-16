@@ -88,22 +88,18 @@ The page performs the same status and candidate consistency checks, then writes:
 
 It does not create a Jira issue or embedding.
 
-## Post-create Jira merge（純前端可選功能）
+### Merge Lambda contract
 
-`merge.html` / `merge.js` 可選擇由 reviewer 在目前瀏覽器輸入 Jira URL、帳號與 API token，直接呼叫 Jira REST API。Jira credentials 僅保存在 JavaScript memory，不會寫入 `localStorage`、`sessionStorage`、Cookie、URL、console 或結果頁面；重新整理或關閉分頁後消失。
+`merge.html` 只直接查詢 OpenSearch，並透過 pinned AWS SDK v3 browser bundle 使用 reviewer 貼上的 temporary AWS credentials 直接呼叫 Lambda。credentials 只存在 JavaScript memory，不會寫入 `localStorage`、`sessionStorage`、Cookie、URL、console 或 Lambda payload。
 
-使用方式：
+前端先使用 STS `GetCallerIdentity` 顯示實際 AWS account/role，再用 Lambda `InvokeCommand` 呼叫：
 
-1. 輸入並套用 OpenSearch credentials。
-2. 在 Jira 連線設定輸入 HTTPS Jira URL、Jira email/帳號與 API token。
-3. 查詢 target Jira、選取候選，並填寫合併理由。
-4. 有 Jira key 的候選在提交時會先驗證 target/source issue，再更新 OpenSearch error-log reference，呼叫 `DELETE /rest/api/3/issue/{sourceKey}`，確認 source 不存在後才刪除 source embedding。
-5. 沒有 Jira key 的候選不呼叫 Jira API，只執行原本的 OpenSearch merge。
+```json
+{
+  "task": "merge_jira",
+  "source": "VEL-2176",
+  "target": ["VEL-2242"]
+}
+```
 
-安全與限制：
-
-- 這是 browser direct API，token 在操作期間可被該瀏覽器的 DevTools、extension 或惡意頁面程式看到；請使用權限受限、可撤銷的 Jira token，不要使用 administrator token。
-- Jira endpoint 必須允許 `https://yenjiechen.github.io` 的 CORS，且允許 `GET`、`DELETE` 與 `Authorization` request header；否則純前端流程會因瀏覽器 CORS 而失敗。
-- target issue 永遠不會被刪除；source 與 target 相同時拒絕。
-- Jira delete 未成功或無法驗證時，不會刪除 source embedding，但 OpenSearch error-log reference 可能已經更新；畫面會標示該候選失敗，需人工 reconciliation。
-- 這個功能不會將 Jira token 傳到 OpenSearch，也不會把 token 寫入 audit/result。
+AWS SDK client 固定使用 `ap-northeast-1` 與 `vortex-ai-ErrorMessageDailyReport`。貼上的 role 必須只允許 `sts:GetCallerIdentity` 與該 Lambda 的 `lambda:InvokeFunction`；不要在瀏覽器使用 administrator credentials。temporary credentials 過期後必須重新貼上，按清除或重新整理也會移除記憶體中的 credentials。
