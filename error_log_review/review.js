@@ -4,6 +4,8 @@ const CANDIDATE_INDEX = 'jira_issue_embedding_titan_v2';
 const PENDING_STATUS = 'PENDING_REVIEW';
 const CLUSTER_TOKEN_SIMILARITY = 0.45;
 const READ_TIMEOUT_MS = 10 * 60 * 1000;
+const UNASSOCIATED_PAGE_SIZE = 1000;
+const UNASSOCIATED_MAX_LOGS = 100000;
 const READ_TIMEOUT_LABEL = '10 分鐘';
 const CONNECTION_TEST_TIMEOUT_MS = 15000;
 const CONNECTION_STORAGE_KEYS = {
@@ -51,10 +53,34 @@ class ReviewPage {
         this.connection = null;
         this.visibleItems = [];
         this.clusterGroups = new Map();
+        this.unassociatedScan = { pageCount: 0, total: null, truncated: false };
         this.demoMode = new URLSearchParams(window.location.search).get('demo') === '1';
+        this.deepLink = this.readDeepLink();
+        this.focusDocumentId = this.deepLink.documentId;
         this.restoreConnectionFields();
+        this.applyDeepLinkFilters();
         this.bindEvents();
         this.load();
+    }
+
+    readDeepLink() {
+        const params = new URLSearchParams(window.location.search);
+        const mode = params.get('mode');
+        const site = params.get('site');
+        const days = params.get('days');
+        const documentId = params.get('document_id');
+        return {
+            mode: ['PENDING_REVIEW', 'UNASSOCIATED', 'MANUAL_NEEDS_NEW_JIRA'].includes(mode) ? mode : '',
+            site: ['', 'dev', 'stage', 'prod'].includes(site) ? site : '',
+            days: ['1', '7', '30'].includes(days) ? days : '',
+            documentId: documentId && documentId.length <= 512 ? documentId : '',
+        };
+    }
+
+    applyDeepLinkFilters() {
+        if (this.deepLink.mode) document.getElementById('review-mode').value = this.deepLink.mode;
+        if (this.deepLink.site) document.getElementById('site-filter').value = this.deepLink.site;
+        if (this.deepLink.days) document.getElementById('time-range').value = this.deepLink.days;
     }
 
     bindEvents() {
@@ -195,10 +221,16 @@ class ReviewPage {
                 this.items = await this.filterInvalidReferences(this.items);
             }
             await this.attachCandidateDetails(this.items);
+            if (this.focusDocumentId && !this.items.some((item) => item.document_id === this.focusDocumentId)) {
+                this.showToast('找不到指定 document，可能已超出時間範圍、已被關聯或已刪除。', 'error');
+            }
             this.selected.clear();
             this.render();
             this.updateSummary();
-            this.setConnectedState(`已查詢 ${this.items.length} 筆 ${document.getElementById('review-mode').value}（最近 ${this.getTimeRangeDays()} 天）${this.items.length >= 10000 ? '（已達單批上限，請使用 site 篩選或縮短時間區間）' : ''}`, 'success');
+            const scanInfo = mode === 'UNASSOCIATED' && this.unassociatedScan.pageCount
+                ? `｜OpenSearch ${this.unassociatedScan.pageCount} 批${this.unassociatedScan.truncated ? '（已達前端安全上限 100,000 筆）' : ''}`
+                : '';
+            this.setConnectedState(`已查詢 ${this.items.length} 筆 ${mode}（最近 ${this.getTimeRangeDays()} 天）${scanInfo}${this.items.length >= 10000 ? '（可繼續人工篩選或縮短時間區間）' : ''}`, 'success');
         } catch (error) {
             console.error('OpenSearch request failed:', error);
             this.setList(`<div class="error-state">${this.escape(this.describeConnectionError(error))}</div>`);
@@ -218,9 +250,71 @@ class ReviewPage {
         return { range: { timestamp: { gte: start.toISOString(), lte: end.toISOString() } } };
     }
 
+    getDocumentFilter() {
+        return this.focusDocumentId ? { ids: { values: [this.focusDocumentId] } } : null;
+    }
+
+    async fetchUnassociatedItems() {
+        const site = document.getElementById('site-filter').value;
+        // Dev is available when explicitly selected; the default remains
+        // stage/prod to preserve the existing automated-association scope.
+        const indexes = site ? `error_log_${site}_*` : 'error_log_stage_*,error_log_prod_*';
+        const queueQuery = {
+            bool: {
+                must_not: [
+                    {
+                        terms: {
+                            'association_status.keyword': ['MANUAL_NEEDS_NEW_JIRA', 'CREATE_NEW'],
+                        },
+                    },
+                ],
+            },
+        };
+        const items = [];
+        let searchAfter;
+        let pageCount = 0;
+        let total = null;
+        let truncated = false;
+        while (items.length < UNASSOCIATED_MAX_LOGS) {
+            const body = {
+                size: UNASSOCIATED_PAGE_SIZE,
+                track_total_hits: true,
+                sort: [
+                    { timestamp: { order: 'desc', unmapped_type: 'date' } },
+                    { _id: { order: 'asc' } },
+                ],
+                query: { bool: { filter: [this.getTimeRangeFilter(), queueQuery] } },
+            };
+            if (searchAfter) body.search_after = searchAfter;
+            const payload = await this.openSearchRequest(`/${this.encodeIndex(indexes)}/_search`, {
+                method: 'POST',
+                body: JSON.stringify(body),
+            });
+            const hits = payload.hits?.hits || [];
+            if (!Array.isArray(hits)) throw new Error('OpenSearch 回傳的 hits 不是陣列。');
+            pageCount += 1;
+            if (total === null) {
+                const rawTotal = payload.hits?.total;
+                total = typeof rawTotal === 'object' ? rawTotal.value : rawTotal;
+            }
+            items.push(...hits.map((hit) => this.normalizeHit(hit)));
+            if (hits.length < UNASSOCIATED_PAGE_SIZE) break;
+            const nextSearchAfter = hits[hits.length - 1].sort;
+            if (!Array.isArray(nextSearchAfter) || !nextSearchAfter.length) {
+                throw new Error('OpenSearch 分頁缺少 search_after sort values。');
+            }
+            searchAfter = nextSearchAfter;
+            if (items.length >= UNASSOCIATED_MAX_LOGS) truncated = true;
+            this.setConnectedState(`正在查詢未關聯 logs：已讀取 ${items.length.toLocaleString()} 筆（第 ${pageCount} 批）…`, 'pending');
+        }
+        this.unassociatedScan = { pageCount, total, truncated };
+        return items;
+    }
+
     async fetchQueueItems() {
         const mode = document.getElementById('review-mode').value;
         if (mode === 'PENDING_REVIEW') return this.fetchPendingItems();
+        if (mode === 'UNASSOCIATED') return this.fetchUnassociatedItems();
         const site = document.getElementById('site-filter').value;
         // Dev-site error logs are intentionally excluded from automated Jira
         // association (see update_embedding_with_error_logs in report_shared.py);
@@ -244,10 +338,13 @@ class ReviewPage {
             },
         };
         const queueQuery = mode === 'UNASSOCIATED' ? unassociatedQuery : statusFilter;
+        const documentFilter = this.getDocumentFilter();
+        const filters = [this.getTimeRangeFilter(), queueQuery];
+        if (documentFilter) filters.push(documentFilter);
         const body = {
             size: 10000,
             sort: [{ timestamp: { order: 'desc' } }],
-            query: { bool: { filter: [this.getTimeRangeFilter(), queueQuery] } },
+            query: { bool: { filter: filters } },
         };
         const payload = await this.openSearchRequest(`/${this.encodeIndex(indexes)}/_search`, {
             method: 'POST',
@@ -282,25 +379,21 @@ class ReviewPage {
     async fetchPendingItems() {
         const site = document.getElementById('site-filter').value;
         const indexes = site ? `error_log_${site}_*` : ERROR_INDEXES;
+        const documentFilter = this.getDocumentFilter();
+        const filters = [this.getTimeRangeFilter(), {
+            bool: {
+                should: [
+                    { term: { 'association_status.keyword': PENDING_STATUS } },
+                    { term: { association_status: PENDING_STATUS } },
+                ],
+                minimum_should_match: 1,
+            },
+        }];
+        if (documentFilter) filters.push(documentFilter);
         const body = {
             size: 10000,
             sort: [{ timestamp: { order: 'desc' } }],
-            query: {
-                bool: {
-                    filter: [
-                        this.getTimeRangeFilter(),
-                        {
-                            bool: {
-                                should: [
-                                    { term: { 'association_status.keyword': PENDING_STATUS } },
-                                    { term: { association_status: PENDING_STATUS } },
-                                ],
-                                minimum_should_match: 1,
-                            },
-                        },
-                    ],
-                },
-            },
+            query: { bool: { filter: filters } },
         };
         const payload = await this.openSearchRequest(`/${this.encodeIndex(indexes)}/_search`, {
             method: 'POST',
@@ -811,9 +904,10 @@ class ReviewPage {
         const site = document.getElementById('site-filter').value;
         const sort = document.getElementById('sort-filter').value;
         return this.items.filter((item) => {
+            if (this.focusDocumentId && item.document_id !== this.focusDocumentId) return false;
             if (site && item.site !== site) return false;
             if (!search) return true;
-            return [item.error_message, item.message_id, item.review_candidate_key, item.log_group, item.error_type]
+            return [item.document_id, item.error_message, item.message_id, item.review_candidate_key, item.log_group, item.error_type]
                 .filter(Boolean).join(' ').toLowerCase().includes(search);
         }).sort((a, b) => {
             if (sort === 'latest') return new Date(b.timestamp || 0) - new Date(a.timestamp || 0);
@@ -937,6 +1031,7 @@ class ReviewPage {
             : isUnassociated
                 ? `${deleteButton}<button class="btn btn-primary link-existing-btn" type="button" data-review-action="link-existing" data-action-id="${this.escape(item.id)}">連結既有 Jira</button><button class="btn btn-warning needs-jira-btn" type="button" data-review-action="mark-new-jira" data-action-id="${this.escape(item.id)}">標記需建立新 Jira</button>`
                 : `${deleteButton}<button class="btn btn-danger reject-btn" type="button" data-review-action="reject" data-action-id="${this.escape(item.id)}">拒絕候選</button><button class="btn btn-success approve-btn" type="button" data-review-action="approve" data-action-id="${this.escape(item.id)}">核准關聯</button>`;
+        const queueBadges = isUnassociated ? '<span class="badge badge-similarity">UNASSOCIATED</span> <span class="badge badge-similarity">PENDING_REVIEW</span>' : '';
         return `
             <article class="review-card ${selected ? 'is-selected' : ''}" data-id="${this.escape(item.id)}">
                 <div class="card-top">
@@ -944,7 +1039,7 @@ class ReviewPage {
                         <input class="card-check" type="checkbox" data-select-id="${this.escape(item.id)}" ${selected ? 'checked' : ''} aria-label="選取此 log">
                         <div><h2>${this.escape(item.review_candidate_key || (item.candidate && (item.candidate.key || item.candidate.document_id)) || '未指定候選')}</h2><p>${this.escape(item.message_id || item.id || '')}</p></div>
                     </div>
-                    <div><span class="badge badge-${this.escape(site)}">${this.escape(site.toUpperCase())}</span> <span class="badge badge-similarity">相似度 ${similarity}</span></div>
+                    <div><span class="badge badge-${this.escape(site)}">${this.escape(site.toUpperCase())}</span> <span class="badge badge-similarity">相似度 ${similarity}</span> ${queueBadges}</div>
                 </div>
                 <div class="card-grid">
                     <div class="detail-block">
