@@ -317,3 +317,6 @@ input:focus, select:focus, textarea:focus { border-color: var(--primary); box-sh
 @media (max-width: 700px) {
     .target-form { flex-direction: column; align-items: stretch; }
 }
+.home-link { position: fixed; top: 14px; right: 18px; z-index: 1100; display: inline-flex; align-items: center; min-height: 36px; padding: 7px 11px; border: 1px solid rgba(255,255,255,.58); border-radius: 8px; color: #fff; background: rgba(32,47,116,.92); box-shadow: 0 4px 14px rgba(0,0,0,.18); font-size: .88rem; font-weight: 700; text-decoration: none; }
+.home-link:hover { background: var(--primary-dark); }
+@media (max-width: 800px) { .home-link { top: 10px; right: 10px; } .topbar { padding-top: 62px; } }
