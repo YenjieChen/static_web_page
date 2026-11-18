@@ -18,6 +18,7 @@ const CONNECTION_STORAGE_KEYS = {
 };
 const CANDIDATE_POOL_SIZE = 100;
 const SUGGESTION_LIMIT = 30;
+const AI_REVIEW_API_URL = (window.AI_REVIEW_API_URL || 'http://127.0.0.1:8010').replace(/\/$/, '');
 const JIRA_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
 
 class MergePage {
@@ -332,6 +333,7 @@ class MergePage {
             document.getElementById('candidate-list').innerHTML = '<p class="loading-state">正在搜尋相似 candidates...</p>';
             this.candidates = await this.fetchSimilarCandidates(this.target);
             await this.attachAffectedLogCounts(this.candidates);
+            await this.reviewCandidatesWithAI();
             this.renderCandidateList();
         } catch (error) {
             console.error('Merge search failed:', error);
@@ -345,7 +347,7 @@ class MergePage {
             method: 'POST',
             body: JSON.stringify({ size: 50, _source: ['key', 'summary', 'error_message', 'error_type', 'site', 'log_group', 'status', 'embedding'], query: { bool: { should: [{ term: { 'key.keyword': key } }, { term: { key } }], minimum_should_match: 1 } } }),
         });
-        const hits = (payload.hits?.hits || []).filter((hit) => hit._source?.key === key);
+        const hits = (payload.hits?.hits || []).filter((hit) => hit._source?.key === key || hit._source?.document_id === key);
         if (hits.length !== 1) throw new Error(`找不到唯一 Jira ${key} 對應的 embedding document。`);
         const source = hits[0]._source || {};
         if (!Array.isArray(source.embedding) || !source.embedding.length) throw new Error(`Jira ${key} 缺少 embedding vector。`);
@@ -379,6 +381,49 @@ class MergePage {
         }));
     }
 
+    async reviewCandidatesWithAI() {
+        if (!this.candidates.length) return;
+        document.getElementById('candidate-list').innerHTML = '<p class="loading-state">正在由 AI 逐筆判斷相似度...</p>';
+        try {
+            const response = await fetch(`${AI_REVIEW_API_URL}/similarity`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+                body: JSON.stringify({
+                    source: this.target,
+                    candidates: this.candidates,
+                }),
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || `AI similarity API ${response.status}`);
+            const evaluations = payload.candidate_evaluations || [];
+            const byReference = new Map(evaluations.map((item) => [item.candidate_reference, item]));
+            this.candidates = this.candidates.map((candidate) => ({
+                ...candidate,
+                aiEvaluation: byReference.get(candidate.document_id) || byReference.get(candidate.key) || {
+                    match_decision: 'UNCERTAIN',
+                    similarity_score: 0,
+                    reasoning_summary: 'AI 沒有回傳此候選的可驗證判斷。',
+                    risk_flags: ['AI_RESULT_MISSING'],
+                },
+                excludeFromMerge: (byReference.get(candidate.document_id) || byReference.get(candidate.key) || {}).match_decision !== 'MATCH',
+            }));
+        } catch (error) {
+            // AI failure must not silently authorize a merge. Show candidates,
+            // but require the reviewer to explicitly choose merge targets.
+            this.candidates = this.candidates.map((candidate) => ({
+                ...candidate,
+                aiEvaluation: {
+                    match_decision: 'UNCERTAIN',
+                    similarity_score: 0,
+                    reasoning_summary: `AI 判斷失敗：${error.message}`,
+                    risk_flags: ['AI_UNAVAILABLE'],
+                },
+                excludeFromMerge: true,
+            }));
+            this.showToast(`AI similarity 無法完成：${error.message}；候選預設全部排除。`, 'error');
+        }
+    }
+
     async addManualCandidate() {
         if (!this.target) return this.showToast('請先搜尋 source Jira。', 'error');
         const key = document.getElementById('manual-add-key').value.trim();
@@ -390,7 +435,7 @@ class MergePage {
             const payload = await this.openSearchRequest(`/${CANDIDATE_INDEX}/_search`, { method: 'POST', body: JSON.stringify({ size: 1, _source: ['key', 'summary', 'error_message', 'error_type', 'traceback', 'site', 'log_group', 'status'], query: { bool: { should: [{ term: { 'key.keyword': key } }, { term: { key } }], minimum_should_match: 1 } } }) });
             const hit = payload.hits?.hits?.find((item) => item._source?.key === key);
             if (!hit) throw new Error(`找不到 Jira ${key} 對應的 embedding document。`);
-            const candidate = { ...(hit._source || {}), document_id: hit._id, index: hit._index, manuallyAdded: true, score: null, similarity: null };
+            const candidate = { ...(hit._source || {}), document_id: hit._id, index: hit._index, manuallyAdded: true, score: null, similarity: null, aiEvaluation: { match_decision: 'UNCERTAIN', similarity_score: 0, reasoning_summary: '手動加入候選尚未經過 AI 判斷。', risk_flags: ['AI_REVIEW_NOT_RUN'] }, excludeFromMerge: true };
             await this.attachAffectedLogCounts([candidate]);
             this.candidates = [candidate, ...this.candidates];
             document.getElementById('manual-add-key').value = '';
@@ -414,11 +459,16 @@ class MergePage {
             this.updateSubmitButtonState();
             return;
         }
-        list.innerHTML = `<label class="checkbox-field candidate-select-all"><input type="checkbox" data-select-all-candidates><span>全選 candidates</span></label>${this.candidates.map((candidate, index) => {
+        list.innerHTML = `<label class="checkbox-field candidate-select-all"><input type="checkbox" data-select-all-candidates><span>全選「不相似／排除」候選</span></label><p class="candidate-review-hint">AI 判定為不相似或不確定的候選會預設勾選排除；只有未勾選的候選會送給 merge_jira。送出前請人工確認。</p>${this.candidates.map((candidate, index) => {
             const similarity = Number.isFinite(candidate.similarity) ? `${(candidate.similarity * 100).toFixed(2)}%` : '手動加入';
-            const label = candidate.manuallyAdded ? '手動加入' : `相似度 ${similarity}`;
+            const ai = candidate.aiEvaluation || {};
+            const aiScore = Number.isFinite(ai.similarity_score) ? `${(ai.similarity_score * 100).toFixed(1)}%` : '—';
+            const aiDecision = ai.match_decision || 'UNCERTAIN';
+            const aiClass = aiDecision === 'MATCH' ? 'badge-ai-match' : aiDecision === 'NOT_MATCH' ? 'badge-ai-not-match' : 'badge-ai-uncertain';
+            const label = candidate.manuallyAdded ? '手動加入' : `OpenSearch ${similarity}`;
             const count = candidate.affectedLogCount === null ? '查詢失敗' : `${candidate.affectedLogCount} 筆`;
-            return `<label class="candidate-merge-item"><input type="checkbox" data-candidate-checkbox data-index="${index}"><div class="candidate-merge-body"><div class="candidate-merge-top"><span class="badge badge-similarity">${label}</span><span class="candidate-merge-count">影響 error log：${count}</span><span class="badge badge-warning">封存 Jira ${this.escape(candidate.key || '無 key')}</span></div><p class="candidate-merge-summary">${this.escape(candidate.summary || candidate.error_message || '未提供 summary')}</p><p class="candidate-merge-meta">doc_id：${this.escape(candidate.document_id)}　site：${this.escape(candidate.site || '')}　log_group：${this.escape(candidate.log_group || '')}</p></div></label>`;
+            const checked = candidate.excludeFromMerge ? ' checked' : '';
+            return `<label class="candidate-merge-item"><input type="checkbox" data-candidate-checkbox data-index="${index}"${checked}><div class="candidate-merge-body"><div class="candidate-merge-top"><span class="badge badge-similarity">${label}</span><span class="badge ${aiClass}">AI ${this.escape(aiDecision)} ${aiScore}</span><span class="candidate-merge-count">影響 error log：${count}</span><span class="badge badge-warning">${candidate.excludeFromMerge ? '排除，不合併' : '保留待合併'}：${this.escape(candidate.key || '無 key')}</span></div><p class="candidate-merge-summary">${this.escape(candidate.summary || candidate.error_message || '未提供 summary')}</p><p class="candidate-merge-reason">AI 理由：${this.escape(ai.reasoning_summary || '未提供')}</p><p class="candidate-merge-meta">doc_id：${this.escape(candidate.document_id)}　site：${this.escape(candidate.site || '')}　log_group：${this.escape(candidate.log_group || '')}</p></div></label>`;
         }).join('')}`;
         this.updateSubmitButtonState();
     }
@@ -432,24 +482,30 @@ class MergePage {
 
     updateSubmitButtonState() {
         const checkboxes = [...document.querySelectorAll('#candidate-list [data-candidate-checkbox]')];
-        const selectedCount = checkboxes.filter((checkbox) => checkbox.checked).length;
+        const excludedCount = checkboxes.filter((checkbox) => checkbox.checked).length;
+        const mergeCount = checkboxes.length - excludedCount;
         const selectAll = document.querySelector('#candidate-list [data-select-all-candidates]');
         if (selectAll) {
-            selectAll.checked = checkboxes.length > 0 && selectedCount === checkboxes.length;
-            selectAll.indeterminate = selectedCount > 0 && selectedCount < checkboxes.length;
+            selectAll.checked = checkboxes.length > 0 && excludedCount === checkboxes.length;
+            selectAll.indeterminate = excludedCount > 0 && excludedCount < checkboxes.length;
         }
-        document.getElementById('submit-merge-btn').disabled = selectedCount === 0;
+        document.getElementById('submit-merge-btn').disabled = mergeCount === 0;
     }
 
     getSelectedCandidates() {
-        return [...document.querySelectorAll('#candidate-list [data-candidate-checkbox]:checked')].map((box) => this.candidates[Number(box.dataset.index)]).filter(Boolean);
+        // Checkbox means "exclude as not similar". Merge targets are the
+        // remaining candidates, never the checked candidates.
+        return [...document.querySelectorAll('#candidate-list [data-candidate-checkbox]')]
+            .filter((box) => !box.checked)
+            .map((box) => this.candidates[Number(box.dataset.index)])
+            .filter(Boolean);
     }
 
     openConfirmModal() {
         const selected = this.getSelectedCandidates();
         if (!selected.length) return;
         if (!this.awsCredentials) return this.showToast('請先貼上並驗證 AWS temporary credentials。', 'error');
-        document.getElementById('confirm-modal-body').innerHTML = `<p>保留 source：<strong>${this.escape(this.target.key)}</strong></p><p>送給 Lambda 封存的 targets：</p><ul class="confirm-candidate-list">${selected.map((candidate) => `<li>${this.escape(candidate.key)}（doc_id：${this.escape(candidate.document_id)}，${candidate.affectedLogCount ?? '?'} 筆 log）</li>`).join('')}</ul><p>Lambda event：<code>{"task":"merge_jira","source":"${this.escape(this.target.key)}","target":[${selected.map((candidate) => `"${this.escape(candidate.key)}"`).join(',')}]}</code></p>`;
+        document.getElementById('confirm-modal-body').innerHTML = `<p>保留 source：<strong>${this.escape(this.target.key)}</strong></p><p>已勾選的不相似候選會排除；以下未勾選候選將送給 Lambda 封存：</p><ul class="confirm-candidate-list">${selected.map((candidate) => `<li>${this.escape(candidate.key)}（AI：${this.escape(candidate.aiEvaluation?.match_decision || 'UNCERTAIN')}，${candidate.affectedLogCount ?? '?'} 筆 log）</li>`).join('')}</ul><p>Lambda event：<code>{"task":"merge_jira","source":"${this.escape(this.target.key)}","target":[${selected.map((candidate) => `"${this.escape(candidate.key)}"`).join(',')}]}</code></p>`;
         document.getElementById('confirm-modal').classList.remove('hidden');
     }
 
